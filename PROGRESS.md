@@ -45,7 +45,12 @@
 - 踩坑：pg18 数据目录布局变更，老挂载路径失效 → 读日志 + 搜索定位，down -v 清脏卷重来
 - 学到：image/container/volume/healthcheck；报错三段式（原因/现状/建议）；compose 端口 ↔ .env 连接串是一对约定
 
-### P0-4 backend 逐文件重写 — 进行中
+### P0-4 backend 逐文件讲解 — ✓ 2026-10-15
+
+- 验收通过：pytest 2 passed / ruff clean；三道思考题（惰性、pre_ping、500 vs degraded）
+- 学到：配置三层优先级；engine 惰性 + 连接池；健康检查 200+degraded 优于 500（观测信号不失真）；TestClient 测行为契约
+
+### P0-5 端到端验收 + Phase 0 小结 — 进行中
 
 - 不重新生成：frontend/ 直接用 Claude 生成的参考版，由 Claude 逐文件讲解
 - 验收：`npm install && npm run dev` 跑起来；能说出每个生成文件的作用、哪些是脚手架噪音

@@ -77,6 +77,18 @@
       </ul>
       <blockquote>前后端联调走同源代理消除跨域，加载状态用判别联合建模，让 TS 编译器替你守住状态机。</blockquote>
     </article>
+    <article class="cp">
+      <header><span class="id">P0-4</span><time>2026-10-15</time><h2>backend 四文件讲解（无代码变更）</h2></header>
+      <ul>
+        <li>pydantic-settings 三层优先级：<code>环境变量 &gt; .env &gt; 代码默认值</code>；配置与代码分离，密钥不进 git</li>
+        <li><code>create_engine</code> 是连接池管家而非单连接，<strong>惰性</strong>：创建时不连，首次使用才连——所以改错 URL 启动不炸、healthz 报 unreachable</li>
+        <li><code>pool_pre_ping</code>：借连接前先 ping——防"空闲被掐→下次请求报错→再下次又好"的间歇鬼故障</li>
+        <li>FastAPI <code>create_app()</code> 工厂模式：可测试、可按环境装配；同步 handler 自动进线程池（async 伏笔 → Phase 2 SSE）</li>
+        <li>TestClient 进程内调用，测<em>行为契约</em>（两种合法形态）而非"数据库必须在线"</li>
+        <li>健康检查崩溃返回 500 = 观测信号失真；200 + degraded 才是"服务活着，依赖挂了"</li>
+      </ul>
+      <blockquote>把"服务可达性"和"依赖健康度"分成两个字段上报，探针语义才不互相污染；连接池的可靠性靠 pre_ping 这类小开销换确定性。</blockquote>
+    </article>
   </div>
 </div>
 </body>
