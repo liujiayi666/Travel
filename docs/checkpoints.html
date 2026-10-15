@@ -89,6 +89,15 @@
       </ul>
       <blockquote>把"服务可达性"和"依赖健康度"分成两个字段上报，探针语义才不互相污染；连接池的可靠性靠 pre_ping 这类小开销换确定性。</blockquote>
     </article>
+    <article class="cp">
+      <header><span class="id">6fb85a0</span><time>2026-10-15</time><h2>P0-5 端到端验收：杀库实验 + 首个 PR</h2></header>
+      <ul>
+        <li>PR 全流程：feature 分支 → push → PR → merge → 本地 pull → 删分支；默认分支概念（首个推上去的分支会成为仓库默认）</li>
+        <li>杀库实验：<code>docker compose stop db</code> 后页面 <code>API: degraded · DB: unreachable</code>，后端 HTTP 仍 200——分层观测的现场证据</li>
+        <li><code>stop</code>（保留容器与数据）vs <code>down</code>（删容器留卷）vs <code>down -v</code>（核弹，连数据）</li>
+      </ul>
+      <blockquote>健康检查的职责边界：依赖故障降级为字段值而非异常，存活信号与依赖状态互不污染。</blockquote>
+    </article>
   </div>
 </div>
 </body>
