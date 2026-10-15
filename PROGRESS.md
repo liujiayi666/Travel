@@ -50,7 +50,12 @@
 - 验收通过：pytest 2 passed / ruff clean；三道思考题（惰性、pre_ping、500 vs degraded）
 - 学到：配置三层优先级；engine 惰性 + 连接池；健康检查 200+degraded 优于 500（观测信号不失真）；TestClient 测行为契约
 
-### P0-5 端到端验收 + Phase 0 小结 — 进行中
+### P0-5 端到端验收 + Phase 0 小结 — ✓ 2026-10-15
+
+- 验收通过：杀库实验（stop db → 页面 degraded，start → connected）；首个 PR 全流程（分支→PR→merge→pull→清理）
+- 学到：健康检查把"服务可达"与"依赖健康"分层上报，依赖故障不污染存活信号
+
+## Phase 0 — 项目骨架（重写参考骨架）— ✓ 2026-10-15 全部完成
 
 - 不重新生成：frontend/ 直接用 Claude 生成的参考版，由 Claude 逐文件讲解
 - 验收：`npm install && npm run dev` 跑起来；能说出每个生成文件的作用、哪些是脚手架噪音
@@ -81,4 +86,6 @@
 
 ## 下一步
 
-P0-0：确认参考骨架是否已 commit（上一条消息里的 git 命令），没跑就先跑。
+Phase 1 最小纵向切片：前端输入 → `POST /api/chat` → DeepSeek 非流式回复 → 存 Message → 显示。
+
+准备：注册 platform.deepseek.com 拿 API Key（sk- 开头），之后放进 `backend/.env`（`DEEPSEEK_API_KEY` 等，不进 git）。
