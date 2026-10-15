@@ -11,7 +11,7 @@
 - 教学流程走 skills：/tutor（按 PROGRESS.md 教学）→ /accept（验收 + 更新 PROGRESS.md + 面试向小结）。
 - PROGRESS.md 是教学数据源，由 Claude 在 /accept 验收后更新；CLAUDE.md 和 .claude/skills 由 Claude 维护。
 - 参考骨架保留在仓库；重写前用户先挪开（如 `mv backend backend-ref`），写完用 `git diff` 对照。
-- 小步提交，conventional commits。
+- 小步提交，conventional commits；git 流程：feature 分支（feat:/docs:/chore: 前缀命名）→ push → PR → merge → 本地 pull 同步，不直接 push main。
 
 ## 技术约定
 
