@@ -1,0 +1,22 @@
+# python
+__pycache__/
+.venv/
+*.pyc
+.ruff_cache/
+.pytest_cache/
+
+# node
+node_modules/
+dist/
+
+# env & secrets
+.env
+.env.local
+.env.*.local
+
+# claude local
+.claude/settings.local.json
+
+# misc
+.DS_Store
+*.log
