@@ -46,7 +46,26 @@
   <p class="sub">每次 /accept 验收通过后，由 Claude 先问"你学到了什么"，再结合 diff 追加一条。id = commit hash。</p>
 
   <div id="list">
-    <p class="empty">还没有条目 — 第一次 /accept 后出现第一条。</p>
+    <article class="cp">
+      <header><span class="id">78e2af9</span><time>2026-10-15</time><h2>P0-0 参考骨架入库</h2></header>
+      <ul>
+        <li><code>git init</code> 生成 <code>.git/</code> —— 本地仓库数据库，分支、历史、HEAD 都在这一个目录里</li>
+        <li><code>git</code> 命令只作用于<em>当前目录所属</em>的仓库，找不到就报 <code>not a git repository</code>；<code>git -C &lt;路径&gt;</code> 可指定</li>
+        <li>monorepo：前后端一个仓库一份历史，接口变更一次 commit 同步</li>
+      </ul>
+      <blockquote>项目采用 monorepo 单仓多包，前后端同仓库同历史，接口变更单个 commit 同步。</blockquote>
+    </article>
+    <article class="cp">
+      <header><span class="id">78e2af9</span><time>2026-10-15</time><h2>P0-1 理解 frontend 脚手架</h2></header>
+      <ul>
+        <li>脚手架 = 生成器拷模板（<code>npm create vite</code> → create-vite 包）；Vite 双身份：dev server 按需编译秒开 / build 用 Rollup 全量打包</li>
+        <li>入口是 <code>index.html</code>：module script → <code>main.tsx</code> → <code>createRoot</code> 把组件树挂进 <code>#root</code></li>
+        <li><code>!</code>（non-null assertion）只骗编译器不骗运行时；strict 模式下 <code>null</code> 不可隐式传给不收 null 的参数</li>
+        <li>StrictMode dev 下双渲染 = 故意暴露不纯的渲染函数（副作用），生产只跑一次</li>
+        <li>HMR：模块级热替换且保留组件 state，配 esbuild + 原生 ESM 构成 Vite 的快</li>
+      </ul>
+      <blockquote>脚手架产物每个文件各司其职：html 是壳、main.tsx 是挂载点、App 是内容；dev 与 build 是两条独立流水线。</blockquote>
+    </article>
   </div>
 </div>
 </body>

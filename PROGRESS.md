@@ -17,14 +17,28 @@
 
 （/accept 验收时记录典型错误，开工前先扫一遍）
 
+- fetch 非 2xx **不会**进 catch（只有网络层失败才 reject）→ 先查 `response.ok` 再 `json()`
+- HTTP 层状态和应用层 body.status 是两回事：后端上报 degraded = 后端在工作，不是请求失败
+- 端口是一对约定：改 uvicorn `--port` 必须同步 vite proxy target；不确定就 `lsof -i :端口` 查
+
 ## Phase 0 — 项目骨架（重写参考骨架）
 
-### P0-0 参考骨架入库 — 进行中
+### P0-0 参考骨架入库 — ✓ 2026-10-15（commit 78e2af9）
 
-- 验收：git log 里有 reference skeleton 的 commit；本文件由我本人更新过
-- 概念：git 基础、monorepo 布局（frontend/ + backend/ 为什么放一个仓库）
+- 验收通过：commit 存在；踩坑一次（终端不在仓库目录跑 git 报 not a git repository）
+- 学到：.git 是仓库数据库；commit 是快照基线，供后续 diff 对照
 
-### P0-1 理解 frontend 脚手架 — 待开始
+### P0-1 理解 frontend 脚手架 — ✓ 2026-10-15
+
+- 验收通过：dev server 跑起来；三道思考题全对（`!` 断言 / StrictMode 双渲染 / HMR）
+- 学到：入口是 index.html；Vite 双身份（dev server 按需编译 / build 全量打包）；StrictMode 是暴露副作用的破坏性测试
+
+### P0-2 vite proxy + App.tsx 健康页 — ✓ 2026-10-15
+
+- 验收通过：页面显示 degraded/unreachable（DB 未起，诚实上报）；Network 实证 StrictMode 双请求
+- 学到：fetch 两层状态（HTTP 层 response.ok / 应用层 body.status）；error 态 = 拿不到可信答案，degraded 是后端在工作
+
+### P0-3 docker-compose 手写 — 进行中
 
 - 不重新生成：frontend/ 直接用 Claude 生成的参考版，由 Claude 逐文件讲解
 - 验收：`npm install && npm run dev` 跑起来；能说出每个生成文件的作用、哪些是脚手架噪音
