@@ -1,7 +1,6 @@
 services:
   db:
     image: postgres:18-alpine
-    container_name: travel-db
     environment:
       POSTGRES_USER: travel
       POSTGRES_PASSWORD: travel
@@ -9,12 +8,11 @@ services:
     ports:
       - "5432:5432"
     volumes:
-      - pgdata:/var/lib/postgresql/data
+      - pgdata:/var/lib/postgresql 
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U travel -d travel"]
       interval: 5s
       timeout: 3s
       retries: 10
-
 volumes:
-  pgdata:
+  pgdata: 

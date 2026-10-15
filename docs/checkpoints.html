@@ -66,6 +66,17 @@
       </ul>
       <blockquote>脚手架产物每个文件各司其职：html 是壳、main.tsx 是挂载点、App 是内容；dev 与 build 是两条独立流水线。</blockquote>
     </article>
+    <article class="cp">
+      <header><span class="id">6a6cd50</span><time>2026-10-15</time><h2>P0-2 vite proxy + App.tsx 健康页</h2></header>
+      <ul>
+        <li>dev proxy：前端只写相对路径 <code>/api</code>，Vite 转发到后端端口——免 CORS、环境可移植（prod 换 Nginx，代码零改动）</li>
+        <li>fetch 两层状态：HTTP 层（<code>response.ok</code>）管传输，应用层（body.status）管业务；先查 ok 再 <code>json()</code></li>
+        <li>fetch 只有<em>网络层</em>失败才 reject——404/500 都走 then，且 404 的 body 可能是合法 JSON</li>
+        <li>判别联合（discriminated union）让非法状态不可表示；error = 拿不到可信答案，degraded = 后端诚实上报</li>
+        <li>StrictMode dev 双渲染实证：Network 面板两次请求</li>
+      </ul>
+      <blockquote>前后端联调走同源代理消除跨域，加载状态用判别联合建模，让 TS 编译器替你守住状态机。</blockquote>
+    </article>
   </div>
 </div>
 </body>
