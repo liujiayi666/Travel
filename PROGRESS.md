@@ -34,6 +34,9 @@
 - `Base` 是应用自定义的 DeclarativeBase；模型从 `app.core.db` 引入它。只有模型模块被导入后，表才注册进共享的 `Base.metadata`
 - Ruff format 不整理 import；`I001` 用 `ruff check --fix`。Python 缩进决定语法结构，文件无法解析时格式化器不会猜修复意图
 - Alembic 的 Ruff `console_scripts` runner 找不到 Ruff 的 Python 入口；仓库使用 `exec` runner，并同时执行 `ruff check --fix` 和 `ruff format`
+- `PasswordHash.recommended()` 是类方法，不是 `PasswordHash().recommended()`；Argon2id 是 `pwdlib` 当前推荐哈希器
+- `hashlib.sha256()` 接收字节而不是字符串；`digest()` 是 32 字节，`hexdigest()` 是便于存 `VARCHAR(64)` 的 64 字符摘要
+- Session token 使用 32 字节（256 位）安全随机数，不是 32 位；`random` 不是密码学安全随机源
 
 ## Phase 0 — 项目骨架（重写参考骨架）
 
@@ -85,15 +88,23 @@
 - 学到：`Mapped[T]` + `mapped_column` 让 Python 类型与数据库列映射在同一处表达；Session 独立建表使多设备登录与立即撤销成为可能；数据库只保存 token 摘要，原始 token 留给浏览器 Cookie
 - 学到：模型元数据、迁移文件与真实数据库是三层需要分别验证的结构；Alembic 生成迁移后仍要检查约束名称、外键行为和 downgrade
 
-### A2 密码与 Session token 安全工具 — 进行中
+### A2 密码与 Session token 安全工具 — ✓ 2026-10-23
 
-- 目标：实现 Argon2id 密码哈希验证、随机 Session token 生成和 SHA-256 摘要
-- 验收：同一密码每次哈希结果不同但可验证；token 具有足够熵，数据库只接收摘要；不发生明文密码或原始 token 持久化
-- 概念：盐、慢哈希、token 哈希、恒定时间比较、安全随机数
+- 验收通过：`pytest` 7 passed，覆盖 Argon2id、随机 salt、正确/错误密码、URL-safe token 和 SHA-256 摘要
+- 关键代码（用户手写）：`app/core/security.py` 四个安全原语
+- 外围（Codex 代写并讲解）：`tests/test_security.py` 行为测试
+- 学到：密码使用带随机 salt 的 Argon2id；Session token 来自操作系统安全随机源，因熵足够高而可用确定性的 SHA-256 摘要建立数据库索引
+- 学到：原始 Session token 只进入 HttpOnly Cookie，数据库只保存摘要；密码和 token 的威胁模型不同，因此哈希算法选择不同
+
+### A3 认证 Service 与 HTTP 契约 — 进行中
+
+- 目标：定义注册 / 登录 / 公开用户的 Pydantic Schema，创建请求级数据库 Session，实现注册、登录、查当前用户、退出的业务 Service
+- 验收：邮箱规范化及并发唯一冲突处理正确；注册和 Session 创建处于同一事务；密码、原始 token 和摘要边界清晰
+- 概念：dependency、事务边界、ORM Model 与 API Schema 分离、业务错误转换
 
 ## 下一步
 
-A2 认证安全工具：先实现纯函数和单元测试，再接 Service、路由与 Cookie。完成认证闭环后再回到 Trip 和 Chat。
+A3 先完成 Schema、数据库 Session 依赖和认证 Service；Service 行为通过后再接 FastAPI 路由与 Cookie。
 
 后续顺序：后端注册 / 登录 / 退出 / me → React Router 登录页与 App Shell → Trip → 非流式 Chat → SSE。
 
