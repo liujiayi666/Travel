@@ -98,6 +98,17 @@
       </ul>
       <blockquote>健康检查的职责边界：依赖故障降级为字段值而非异常，存活信号与依赖状态互不污染。</blockquote>
     </article>
+    <article class="cp">
+      <header><span class="id">待提交</span><time>2026-10-23</time><h2>A1 认证模型与数据库迁移</h2></header>
+      <ul>
+        <li><code>Base</code> 不是数据库连接：它是 ORM 模型共享的注册表，<code>Base.metadata</code> 收集所有表与约束，供 SQLAlchemy 和 Alembic 使用</li>
+        <li>模型通过 <code>Mapped[T]</code> 表达 Python 类型，通过 <code>mapped_column(...)</code> 表达主键、唯一约束、外键和默认值</li>
+        <li><code>users</code> 与 <code>auth_sessions</code> 是一对多关系；Session 使用外键和 <code>ON DELETE CASCADE</code>，支持多设备登录和立即撤销</li>
+        <li>Alembic 必须导入模型模块后才能看到共享 metadata；自动生成的迁移仍需检查约束名称、索引和 downgrade</li>
+        <li>模型、迁移文件和 PostgreSQL 实际结构是三层结构，分别检查后才能确认数据库设计与代码一致</li>
+      </ul>
+      <blockquote>用共享 Base 建立统一 ORM 注册表，用 typed mapping 描述模型，再用可审查、可回滚的迁移把 Python 结构可靠地落到 PostgreSQL。</blockquote>
+    </article>
   </div>
 </div>
 </body>

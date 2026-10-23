@@ -13,6 +13,7 @@
 |---|---|---|
 | 1 | 2026-10-15 | 模式确立：mentor 模式 + /tutor /accept skill + 参考骨架入库 |
 | 2 | 2026-10-16 | P0-6 backend 容器化（插入步）+ 部署路线图（docs/deploy.md） |
+| 3 | 2026-10-23 | 路线调整：认证优先；完成 User / AuthSession 模型和首份 Alembic 迁移 |
 
 ## 易错本
 
@@ -29,6 +30,10 @@
 - Docker Desktop 的代理/mirror 设置要点 Apply & restart 才落盘；它不继承系统/浏览器代理
 - 容器间互访：服务名=主机名 + 容器内部端口；published 端口只在宿主机上有意义
 - 国内直连 docker.io 是 DNS 污染（解析到假 IP）→ 走代理或 registry-mirror
+- SQLAlchemy 类型参数属于类型构造器：写 `String(320)`、`DateTime(timezone=True)`，不是 `Column` / `mapped_column` 的额外参数
+- `Base` 是应用自定义的 DeclarativeBase；模型从 `app.core.db` 引入它。只有模型模块被导入后，表才注册进共享的 `Base.metadata`
+- Ruff format 不整理 import；`I001` 用 `ruff check --fix`。Python 缩进决定语法结构，文件无法解析时格式化器不会猜修复意图
+- Alembic 的 Ruff `console_scripts` runner 找不到 Ruff 的 Python 入口；仓库使用 `exec` runner，并同时执行 `ruff check --fix` 和 `ruff format`
 
 ## Phase 0 — 项目骨架（重写参考骨架）
 
@@ -70,43 +75,26 @@
 - 关键代码（用户手写）：backend/Dockerfile、compose 的 api service
 - 外围（Claude 代写）：backend/.dockerignore
 
-## Phase 0 — 项目骨架（重写参考骨架）— ✓ 2026-10-15 全部完成
+## Phase A — 认证优先（提前实施）
 
-- 不重新生成：frontend/ 直接用 Claude 生成的参考版，由 Claude 逐文件讲解
-- 验收：`npm install && npm run dev` 跑起来；能说出每个生成文件的作用、哪些是脚手架噪音
-- 概念：脚手架是什么、Vite 的角色（dev server + 构建）、TS strict、ESLint flat config
+### A1 User / AuthSession 数据模型与首份迁移 — ✓ 2026-10-23
 
-### P0-2 vite proxy + App.tsx 健康页 — 待开始
+- 验收通过：`pytest` 2 passed；Alembic `upgrade head` 成功，版本 `4ed703ed0583`；在 PostgreSQL 中确认两张表、主键、唯一约束、索引和 `ON DELETE CASCADE`
+- 关键代码（用户手写）：`app/core/db.py` 的共享 Base / 约束命名、`app/auth/models.py` 的两个 typed mapping 模型
+- 外围（Codex 代写并讲解）：Alembic 配置、连接配置、迁移后置 Ruff hooks
+- 学到：`Mapped[T]` + `mapped_column` 让 Python 类型与数据库列映射在同一处表达；Session 独立建表使多设备登录与立即撤销成为可能；数据库只保存 token 摘要，原始 token 留给浏览器 Cookie
+- 学到：模型元数据、迁移文件与真实数据库是三层需要分别验证的结构；Alembic 生成迁移后仍要检查约束名称、外键行为和 downgrade
 
-- 验收：手写 fetch /api/healthz，页面三态（loading / ok / fail）；能答出 StrictMode 双请求现象及应对
-- 概念：useState/useEffect、TS 判别联合类型建模状态、dev proxy 原理
+### A2 密码与 Session token 安全工具 — 进行中
 
-### P0-3 docker-compose 手写 — 待开始
-
-- 前置：`mv docker-compose.yml docker-compose-ref.yml`
-- 验收：手写 compose 起 postgres:18-alpine，healthcheck 通过；能讲 image / container / volume / healthcheck
-- 概念：Docker 三件套、named volume 持久化、端口映射
-
-### P0-4 backend 逐文件重写 — 待开始
-
-- 分工：pyproject.toml 由 Claude 代写讲解；core/config.py、core/db.py、main.py、tests 由用户手写（关键代码）
-- 顺序：pyproject.toml → uv sync → core/config.py → core/db.py → main.py → tests
-- 验收：`uv run pytest` 全绿 + `uv run ruff check .` 无告警；DB 断连时 healthz 返回 degraded 而不是 500
-- 概念：uv/pyproject（类比 package.json）、pydantic-settings、SQLAlchemy engine、FastAPI 路由
-
-### P0-5 端到端验收 + Phase 0 小结 — 待开始
-
-- 验收：浏览器 5173 显示 DB connected；能讲清完整链路（Vite proxy → uvicorn → psycopg → PG）
-- 概念：请求链路全景
+- 目标：实现 Argon2id 密码哈希验证、随机 Session token 生成和 SHA-256 摘要
+- 验收：同一密码每次哈希结果不同但可验证；token 具有足够熵，数据库只接收摘要；不发生明文密码或原始 token 持久化
+- 概念：盐、慢哈希、token 哈希、恒定时间比较、安全随机数
 
 ## 下一步
 
-Phase 1 最小纵向切片（进行中）：前端输入 → `POST /api/chat` → DeepSeek 非流式回复 → 存 Message → 显示（含刷新后历史保留）。
+A2 认证安全工具：先实现纯函数和单元测试，再接 Service、路由与 Cookie。完成认证闭环后再回到 Trip 和 Chat。
 
-准备：注册 platform.deepseek.com 拿 API Key（sk- 开头），之后放进 `backend/.env`（`DEEPSEEK_API_KEY` 等，不进 git）。
+后续顺序：后端注册 / 登录 / 退出 / me → React Router 登录页与 App Shell → Trip → 非流式 Chat → SSE。
 
-Phase 1 已定案（2026-10-16 讨论）：
-
-- 前端引入 Tailwind v4（@theme 写语义 token，分层：原始色阶 → 语义 → 组件），不引入组件库/路由/TanStack Query
-- 数据模型：单表 messages（id, conversation_id, role, content, created_at）；前端 localStorage 存 conversation_id（uuid）；`GET /api/messages?conversation_id=` 拉历史；暂不建 conversations 表
-- LLM 走 provider 接口隔离（OpenAI 兼容协议，base_url/model/key 读 .env），DeepSeek 先行；httpx 发请求；Phase 1 非流式
+准备：注册 platform.deepseek.com 拿 API Key（`sk-` 开头），后续放进 `backend/.env`；现在 A2 还不需要该密钥。
