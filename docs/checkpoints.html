@@ -110,7 +110,7 @@
       <blockquote>用共享 Base 建立统一 ORM 注册表，用 typed mapping 描述模型，再用可审查、可回滚的迁移把 Python 结构可靠地落到 PostgreSQL。</blockquote>
     </article>
     <article class="cp">
-      <header><span class="id">待提交</span><time>2026-10-23</time><h2>A2 密码与 Session token 安全原语</h2></header>
+      <header><span class="id">0ac7e17</span><time>2026-10-23</time><h2>A2 密码与 Session token 安全原语</h2></header>
       <ul>
         <li>密码是低熵输入，使用带随机 salt 的 Argon2id；同一密码每次哈希不同，但仍能通过编码中保存的 salt 和参数验证</li>
         <li>Session token 由 <code>secrets.token_urlsafe(32)</code> 生成，32 字节即 256 位安全随机熵；不能用普通 <code>random</code> 生成登录凭证</li>
