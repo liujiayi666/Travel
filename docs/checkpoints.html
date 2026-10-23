@@ -99,7 +99,7 @@
       <blockquote>健康检查的职责边界：依赖故障降级为字段值而非异常，存活信号与依赖状态互不污染。</blockquote>
     </article>
     <article class="cp">
-      <header><span class="id">待提交</span><time>2026-10-23</time><h2>A1 认证模型与数据库迁移</h2></header>
+      <header><span class="id">7df6fa2</span><time>2026-10-23</time><h2>A1 认证模型与数据库迁移</h2></header>
       <ul>
         <li><code>Base</code> 不是数据库连接：它是 ORM 模型共享的注册表，<code>Base.metadata</code> 收集所有表与约束，供 SQLAlchemy 和 Alembic 使用</li>
         <li>模型通过 <code>Mapped[T]</code> 表达 Python 类型，通过 <code>mapped_column(...)</code> 表达主键、唯一约束、外键和默认值</li>
