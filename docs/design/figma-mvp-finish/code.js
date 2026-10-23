@@ -2,6 +2,61 @@ const MVP_PAGE_NAME = 'MVP · Travel Chat';
 const TOKEN_BOARD_NAME = 'Design tokens / roamwise MVP';
 const BRAND_TOGGLE_NAME = 'Brand collapse / Updated';
 const ROW_PATTERN = /^\d{2}\s*\/\s*/;
+const OWNER_KEY = 'roamwiseMvpOwner';
+const OWNER_VALUE = 'v2';
+const SIDEBAR_COMPONENT_NAMES = new Set([
+  'Sidebar / Workspace / Signed in',
+  'Sidebar / Workspace / Signed out',
+]);
+const AUTH_FIELD_COMPONENT_NAMES = new Set([
+  'Auth / Text Field / Default',
+  'Auth / Text Field / Filled',
+  'Auth / Text Field / Password',
+  'Auth / Text Field / Error',
+]);
+const AUTH_MODAL_COMPONENT_NAMES = new Set([
+  'Auth modal / Sign in',
+  'Auth modal / Create account',
+]);
+
+function markOwned(node) {
+  node.setPluginData(OWNER_KEY, OWNER_VALUE);
+  return node;
+}
+
+function isOwned(node) {
+  let current = node;
+  while (current) {
+    if (
+      'getPluginData' in current &&
+      current.getPluginData(OWNER_KEY) === OWNER_VALUE
+    ) {
+      return true;
+    }
+    if (current.type === 'PAGE') break;
+    current = current.parent;
+  }
+  return false;
+}
+
+function claimLegacyMvpPage(page) {
+  if (
+    !isOwned(page) &&
+    page.findOne(node => node.type === 'FRAME' && node.name === 'Components / MVP board') &&
+    page.findOne(node => node.type === 'FRAME' && node.name === TOKEN_BOARD_NAME)
+  ) {
+    markOwned(page);
+  }
+}
+
+function claimLegacyThemePage(page) {
+  if (page.name !== 'MVP · Theme Screens' || isOwned(page)) return;
+  const safeChildren = page.children.every(
+    node => node.type === 'TEXT' ||
+      (node.type === 'INSTANCE' && ROW_PATTERN.test(node.name)),
+  );
+  if (safeChildren) markOwned(page);
+}
 
 function rgb(hex) {
   const value = hex.replace('#', '');
@@ -147,7 +202,11 @@ async function ensureDesignTokens() {
   const variables = await figma.variables.getLocalVariablesAsync();
   const primitives = collections.find(item => item.name === 'Travel / Primitives');
   const colors = collections.find(item => item.name === 'Travel / Color');
-  if (!primitives || !colors) throw new Error('Travel token collections are missing.');
+  if (!primitives || !colors) {
+    throw new Error(
+      'Travel token collections are missing. Run this repair in the initialized Travel Web GPT file.',
+    );
+  }
   const primitiveMode = primitives.modes[0].modeId;
   const colorMode = colors.modes[0].modeId;
 
@@ -280,7 +339,11 @@ async function getTextStyles() {
   const all = await figma.getLocalTextStylesAsync();
   const resolve = name => {
     const style = all.find(item => item.name === `Travel / ${name}`);
-    if (!style) throw new Error(`Missing text style: ${name}`);
+    if (!style) {
+      throw new Error(
+        `Missing text style: Travel / ${name}. Run this repair in the initialized Travel Web GPT file.`,
+      );
+    }
     return style;
   };
   return {
@@ -462,14 +525,21 @@ function isStateFrame(node) {
   return node.type === 'FRAME' && ROW_PATTERN.test(node.name);
 }
 
-function restoreStateFramesIfNeeded(page) {
+async function restoreStateFramesIfNeeded(page) {
   const instances = page.children.filter(
-    node => node.type === 'INSTANCE' && ROW_PATTERN.test(node.name),
+    node => node.type === 'INSTANCE' && ROW_PATTERN.test(node.name) && isOwned(node),
   );
   for (const instance of instances) {
     const name = instance.name;
     const x = instance.x;
     const y = instance.y;
+    const main = await instance.getMainComponentAsync();
+    if (main?.parent?.type === 'COMPONENT_SET') {
+      const light = main.parent.children.find(
+        node => node.type === 'COMPONENT' && node.name.includes('Theme=Light'),
+      );
+      if (light && light.id !== main.id) instance.swapComponent(light);
+    }
     const frame = instance.detachInstance();
     frame.name = name;
     frame.x = x;
@@ -488,8 +558,9 @@ async function replaceSidebars(page, tokens, styles) {
   }
   for (const node of [...page.children]) {
     if (
+      isOwned(node) &&
       (node.type === 'COMPONENT' || node.type === 'COMPONENT_SET') &&
-      node.name.startsWith('Sidebar /')
+      SIDEBAR_COMPONENT_NAMES.has(node.name)
     ) {
       node.remove();
     }
@@ -651,6 +722,11 @@ async function createThemeVariantSets(page, darkTokens) {
       node => node.type === 'COMPONENT_SET' && node.name === definition.name,
     );
     if (existingSet) {
+      const dark = existingSet.children.find(
+        node => node.type === 'COMPONENT' && node.name.includes('Theme=Dark'),
+      );
+      if (!dark) throw new Error(`Missing Theme=Dark variant in ${definition.name}`);
+      await applyDarkTheme(dark, darkTokens);
       sets[definition.name] = existingSet;
       continue;
     }
@@ -772,26 +848,23 @@ function auditThemeTokens(page, themeSets) {
   };
 }
 
-async function rebuildDarkState(page, darkTokens) {
-  const previous = page.findOne(node => node.type === 'FRAME' && node.name === '08 / Dark mode — new chat');
-  if (previous) previous.remove();
-  const base = page.findOne(node => node.type === 'FRAME' && node.name === '01 / New chat — blank');
-  if (!base) throw new Error('Blank state frame is missing.');
-  const clone = base.clone();
-  clone.name = '08 / Dark mode — new chat';
-  clone.x = 3240;
-  clone.y = 3200;
-  await applyDarkTheme(clone, darkTokens);
-  return clone;
-}
-
 async function createWholeScreenThemeVariants(page, darkTokens, tokens, styles) {
   const existingPage = figma.root.children.find(node => node.name === 'MVP · Theme Screens');
-  if (existingPage) existingPage.remove();
+  if (existingPage) {
+    claimLegacyThemePage(existingPage);
+    if (!isOwned(existingPage)) {
+      throw new Error(
+        'A pre-existing "MVP · Theme Screens" page was found. Rename it before running the plugin.',
+      );
+    }
+    existingPage.remove();
+  }
   const darkSample = page.findOne(node => node.type === 'FRAME' && node.name === '08 / Dark mode — new chat');
-  if (darkSample) darkSample.remove();
+  if (darkSample && isOwned(darkSample)) darkSample.remove();
   for (const node of [...page.children]) {
-    if (node.type === 'COMPONENT_SET' && node.name.startsWith('Screen / ')) node.remove();
+    if (isOwned(node) && node.type === 'COMPONENT_SET' && node.name.startsWith('Screen / ')) {
+      node.remove();
+    }
   }
 
   const stateFrames = page.children
@@ -842,6 +915,7 @@ async function createWholeScreenThemeVariants(page, darkTokens, tokens, styles) 
 
   const themePage = figma.createPage();
   themePage.name = 'MVP · Theme Screens';
+  markOwned(themePage);
   await figma.setCurrentPageAsync(themePage);
   await addText(themePage, 'WHOLE-SCREEN VARIANTS', 160, 112, styles.label, bindPaint(tokens['color/text/tertiary']));
   await addText(themePage, 'Select a screen, then switch Theme in the right sidebar.', 160, 146, styles.display, bindPaint(tokens['color/text/primary']));
@@ -873,6 +947,7 @@ async function createWholeScreenThemeVariants(page, darkTokens, tokens, styles) 
 }
 
 function removeCustomLabels(page) {
+  if (!isOwned(page)) return;
   for (const node of [...page.children]) {
     if (node.type !== 'TEXT') continue;
     if (
@@ -949,8 +1024,9 @@ async function replaceLoadingComponent(page, tokens, styles) {
 async function createAuthFieldVariants(page, tokens, styles) {
   for (const node of [...page.children]) {
     if (
+      isOwned(node) &&
       (node.type === 'COMPONENT' || node.type === 'COMPONENT_SET') &&
-      node.name.startsWith('Auth / Text Field')
+      AUTH_FIELD_COMPONENT_NAMES.has(node.name)
     ) {
       node.remove();
     }
@@ -1185,8 +1261,9 @@ async function rebuildAuthModals(page, tokens, styles) {
   }
   for (const node of [...page.children]) {
     if (
+      isOwned(node) &&
       (node.type === 'COMPONENT' || node.type === 'COMPONENT_SET') &&
-      node.name.startsWith('Auth modal /')
+      AUTH_MODAL_COMPONENT_NAMES.has(node.name)
     ) {
       node.remove();
     }
@@ -1242,7 +1319,14 @@ function arrangeComponentArea(page) {
 
 async function createTokenBoard(page, tokens, styles, darkTokens, audit) {
   const previous = page.findOne(node => node.type === 'FRAME' && node.name === TOKEN_BOARD_NAME);
-  if (previous) previous.remove();
+  if (previous) {
+    if (!isOwned(previous)) {
+      throw new Error(
+        `A pre-existing "${TOKEN_BOARD_NAME}" frame is not plugin-owned. Rename it before continuing.`,
+      );
+    }
+    previous.remove();
+  }
   const board = createFrame(page, TOKEN_BOARD_NAME, 3240, 300, 1440, 1760, {
     fill: bindPaint(tokens['color/bg/canvas']),
     radius: 16,
@@ -1415,18 +1499,37 @@ async function createTokenBoard(page, tokens, styles, darkTokens, audit) {
 }
 
 async function updateLegacyBrandIcon() {
-  const page = figma.root.children.find(node => node.name === 'Page 1');
-  if (!page) return { updated: false, reason: 'Page 1 not found' };
+  await figma.loadAllPagesAsync();
+  let brand = null;
+  let page = null;
+  for (const candidate of figma.root.children) {
+    const brandText = candidate.findAllWithCriteria({ types: ['TEXT'] }).find(
+      node => node.characters.trim().toLowerCase() === 'roamwise',
+    );
+    if (
+      brandText?.parent?.type === 'FRAME' &&
+      brandText.parent.name === 'Group'
+    ) {
+      brand = brandText.parent;
+      page = candidate;
+      break;
+    }
+  }
+  if (!brand || !page) return { updated: false, reason: 'roamwise brand group not found' };
   await figma.setCurrentPageAsync(page);
-  const brand = await figma.getNodeByIdAsync('1:7');
-  if (!brand || brand.type !== 'FRAME') return { updated: false, reason: 'Brand group not found' };
   const previous = brand.findOne(node => node.name === BRAND_TOGGLE_NAME);
-  if (previous) previous.remove();
-  const oldIcon = await figma.getNodeByIdAsync('1:12');
-  if (oldIcon && oldIcon.parent === brand) oldIcon.remove();
+  if (previous) {
+    if (!isOwned(previous)) markOwned(previous);
+    previous.remove();
+  }
+  const oldIcon = brand.children.find(
+    node => node.type === 'VECTOR' && node.x > brand.width - 30 && node.width <= 8,
+  );
+  if (oldIcon) oldIcon.remove();
   const button = figma.createFrame();
   brand.appendChild(button);
   button.name = BRAND_TOGGLE_NAME;
+  markOwned(button);
   button.resize(24, 24);
   button.x = 151;
   button.y = 5;
@@ -1455,7 +1558,14 @@ async function run() {
   const mvpPage = figma.root.children.find(node => node.name === MVP_PAGE_NAME);
   if (!mvpPage) throw new Error('The MVP · Travel Chat page does not exist.');
   await figma.setCurrentPageAsync(mvpPage);
-  restoreStateFramesIfNeeded(mvpPage);
+  claimLegacyMvpPage(mvpPage);
+  if (!isOwned(mvpPage)) {
+    throw new Error(
+      'The MVP · Travel Chat page is not marked as plugin-owned. Duplicate it before applying this repair.',
+    );
+  }
+  markOwned(mvpPage);
+  await restoreStateFramesIfNeeded(mvpPage);
   await loadFonts([
     { family: 'Inter', style: 'Regular' },
     { family: 'Inter', style: 'Medium' },
@@ -1480,7 +1590,6 @@ async function run() {
   const tokenAudit = auditThemeTokens(mvpPage, themeSets);
   arrangeComponentArea(mvpPage);
   const collapsed = await rebuildCollapsedState(mvpPage, tokens, styles);
-  const darkState = await rebuildDarkState(mvpPage, darkTokens);
   const tokenBoard = await createTokenBoard(mvpPage, tokens, styles, darkTokens, tokenAudit);
   const screenThemes = await createWholeScreenThemeVariants(mvpPage, darkTokens, tokens, styles);
   const brandResult = await updateLegacyBrandIcon();
@@ -1499,7 +1608,6 @@ async function run() {
     sidebarCount: sidebarResult.targetCount,
     authOverlayCount: authResult.overlayCount,
     collapsedStateId: collapsed.id,
-    darkStateId: darkState.id,
     darkTokenCount: Object.keys(darkTokens).length,
     themeSetCount: tokenAudit.themeSetCount,
     tokenCoverage: tokenAudit.coverage,
