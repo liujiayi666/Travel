@@ -6,7 +6,7 @@ Local Figma plugin that repairs the `MVP · Travel Chat` page and applies the fi
 
 This is a repair plugin for the existing **Travel Web GPT** file, not a fresh-file generator. Before running it, the file must already contain:
 
-- A `MVP · Travel Chat` page marked as plugin-owned, or the legacy page with the MVP component board and token board.
+- A `MVP · Travel Chat` page marked as plugin-owned, or the legacy page containing the known `01 / New chat — blank` state.
 - `Travel / Primitives`, `Travel / Color`, `Travel / Spacing`, and `Travel / Radius` variable collections.
 - The `Travel / Display`, `Heading`, `Title`, `Body`, `Body Small`, `Label`, and `Caption` text styles.
 

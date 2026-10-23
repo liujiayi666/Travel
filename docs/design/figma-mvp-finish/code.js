@@ -40,17 +40,21 @@ function isOwned(node) {
 }
 
 function claimLegacyMvpPage(page) {
-  if (
-    !isOwned(page) &&
-    page.findOne(node => node.type === 'FRAME' && node.name === 'Components / MVP board') &&
-    page.findOne(node => node.type === 'FRAME' && node.name === TOKEN_BOARD_NAME)
-  ) {
+  if (isOwned(page)) return;
+  const hasKnownState = page.children.some(
+    node =>
+      (node.type === 'FRAME' || node.type === 'INSTANCE') &&
+      node.name === '01 / New chat — blank',
+  );
+  if (hasKnownState) {
     markOwned(page);
   }
 }
 
-function claimLegacyThemePage(page) {
-  if (page.name !== 'MVP · Theme Screens' || isOwned(page)) return;
+async function claimLegacyThemePage(page) {
+  if (page.name !== 'MVP · Theme Screens') return;
+  await page.loadAsync();
+  if (isOwned(page)) return;
   const safeChildren = page.children.every(
     node => node.type === 'TEXT' ||
       (node.type === 'INSTANCE' && ROW_PATTERN.test(node.name)),
@@ -851,7 +855,7 @@ function auditThemeTokens(page, themeSets) {
 async function createWholeScreenThemeVariants(page, darkTokens, tokens, styles) {
   const existingPage = figma.root.children.find(node => node.name === 'MVP · Theme Screens');
   if (existingPage) {
-    claimLegacyThemePage(existingPage);
+    await claimLegacyThemePage(existingPage);
     if (!isOwned(existingPage)) {
       throw new Error(
         'A pre-existing "MVP · Theme Screens" page was found. Rename it before running the plugin.',
