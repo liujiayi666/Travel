@@ -1,0 +1,112 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <style>
+      :root {
+        color-scheme: light dark;
+        font-family: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        color: var(--figma-color-text);
+        background: var(--figma-color-bg);
+      }
+      main { padding: 22px 20px 18px; }
+      .eyebrow {
+        margin: 0 0 7px;
+        color: var(--figma-color-text-secondary);
+        font-size: 10px;
+        font-weight: 700;
+        letter-spacing: .12em;
+        text-transform: uppercase;
+      }
+      h1 {
+        margin: 0;
+        font-size: 20px;
+        font-weight: 650;
+        letter-spacing: -.035em;
+      }
+      p {
+        margin: 8px 0 16px;
+        color: var(--figma-color-text-secondary);
+        font-size: 12px;
+        line-height: 1.55;
+      }
+      .card {
+        padding: 13px 14px;
+        margin-bottom: 14px;
+        border: 1px solid var(--figma-color-border);
+        border-radius: 12px;
+        background: var(--figma-color-bg-secondary);
+        font-size: 11px;
+        line-height: 1.65;
+      }
+      .card strong { color: var(--figma-color-text); }
+      button {
+        width: 100%;
+        height: 42px;
+        border: 0;
+        border-radius: 10px;
+        color: #fff;
+        background: linear-gradient(100deg, #138d7b, #0ea5e9);
+        font: inherit;
+        font-size: 12px;
+        font-weight: 650;
+        cursor: pointer;
+      }
+      button:disabled { cursor: default; opacity: .68; }
+      .status {
+        min-height: 18px;
+        margin-top: 9px;
+        color: var(--figma-color-text-secondary);
+        text-align: center;
+        font-size: 10px;
+      }
+      .status.error { color: #c33b3b; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <p class="eyebrow">roamwise · MVP recovery</p>
+      <h1>Finish the MVP page</h1>
+      <p>Applies the visual fixes that were blocked by the Figma MCP monthly limit.</p>
+      <div class="card">
+        <strong>Changes</strong><br />
+        Restyle workspace navigation · compact inputs · validation states · whole-screen Light/Dark variants · token-bound icons and binding audit
+        <br /><br />
+        Requires the existing Travel Web GPT token collections and text styles.
+      </div>
+      <button id="run">Apply finish fix</button>
+      <div id="status" class="status">Run this in the Travel Web GPT file.</div>
+    </main>
+    <script>
+      const button = document.getElementById("run");
+      const status = document.getElementById("status");
+      button.addEventListener("click", () => {
+        button.disabled = true;
+        button.textContent = "Applying fixes…";
+        status.className = "status";
+        status.textContent = "Updating editable Figma layers.";
+        parent.postMessage({ pluginMessage: { type: "run" } }, "*");
+      });
+      window.onmessage = event => {
+        const message = event.data.pluginMessage;
+        if (!message) return;
+        if (message.type === "done") {
+          button.textContent = "Finished";
+          status.textContent = "Travel Chat states are now whole-screen instances with Theme=Light / Theme=Dark.";
+          return;
+        }
+        if (message.type === "error") {
+          button.disabled = false;
+          button.textContent = "Try again";
+          status.className = "status error";
+          status.textContent = message.text || "Update failed.";
+        }
+      };
+    </script>
+  </body>
+</html>
