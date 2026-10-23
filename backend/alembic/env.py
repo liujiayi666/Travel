@@ -13,7 +13,9 @@ config = context.config
 
 # Use the same environment-driven database configuration as the application.
 # Double percent signs preserve any URL-encoded values through ConfigParser.
-config.set_main_option("sqlalchemy.url", settings.database_url.replace("%", "%%"))
+config.set_main_option(
+    "sqlalchemy.url", settings.database_url.replace("+psycopg_async", "+psycopg").replace("%", "%%")
+)
 
 # Interpret the config file for Python logging.
 # This line sets up loggers basically.

@@ -11,8 +11,8 @@ def create_app() -> FastAPI:
 
     @app.get("/healthz")
     @app.get("/api/healthz")
-    def healthz() -> dict:
-        database = check_database()
+    async def healthz() -> dict:
+        database = await check_database()
         return {
             "status": "ok" if database == "connected" else "degraded",
             "database": database,

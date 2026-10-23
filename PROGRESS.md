@@ -37,6 +37,9 @@
 - `PasswordHash.recommended()` 是类方法，不是 `PasswordHash().recommended()`；Argon2id 是 `pwdlib` 当前推荐哈希器
 - `hashlib.sha256()` 接收字节而不是字符串；`digest()` 是 32 字节，`hexdigest()` 是便于存 `VARCHAR(64)` 的 64 字符摘要
 - Session token 使用 32 字节（256 位）安全随机数，不是 32 位；`random` 不是密码学安全随机源
+- SQLAlchemy 异步功能依赖 `greenlet`，项目需要声明 `sqlalchemy[asyncio]`；psycopg 异步 URL 使用 `postgresql+psycopg_async://`，Alembic 再转回同步驱动
+- Pydantic `mode="before"` validator 收到原始输入，字段类型尚未生效；需要字符串方法时先检查类型，或把 validator 放到 after 阶段
+- `display_name` 需要 before validator 先 strip 再校验长度；密码不能 strip，使用 after validator 只拒绝全空白输入
 
 ## Phase 0 — 项目骨架（重写参考骨架）
 
@@ -101,6 +104,7 @@
 - 目标：定义注册 / 登录 / 公开用户的 Pydantic Schema，创建请求级数据库 Session，实现注册、登录、查当前用户、退出的业务 Service
 - 验收：邮箱规范化及并发唯一冲突处理正确；注册和 Session 创建处于同一事务；密码、原始 token 和摘要边界清晰
 - 概念：dependency、事务边界、ORM Model 与 API Schema 分离、业务错误转换
+- A3.1 Schema、异步数据库依赖与健康检查 — ✓ 2026-10-23：`pytest` 7 passed、Ruff clean；AsyncSession 使用 `psycopg_async`，请求结束自动关闭
 
 ## 下一步
 
