@@ -102,7 +102,7 @@
 - 学到：密码使用带随机 salt 的 Argon2id；Session token 来自操作系统安全随机源，因熵足够高而可用确定性的 SHA-256 摘要建立数据库索引
 - 学到：原始 Session token 只进入 HttpOnly Cookie，数据库只保存摘要；密码和 token 的威胁模型不同，因此哈希算法选择不同
 
-### A3 认证 Service 与 HTTP 契约 — 进行中
+### A3 认证 Service 与 HTTP 契约 — ✓ 2026-10-26
 
 - 目标：定义注册 / 登录 / 公开用户的 Pydantic Schema，创建请求级数据库 Session，实现注册、登录、查当前用户、退出的业务 Service
 - 验收：邮箱规范化及并发唯一冲突处理正确；注册和 Session 创建处于同一事务；密码、原始 token 和摘要边界清晰
@@ -111,10 +111,25 @@
 - A3.2 注册 Service 与 PostgreSQL 集成测试 — ✓ 2026-10-26：在 `travel_test` 上 3 passed；验证邮箱规范化、User/AuthSession 同事务提交、密码/token 摘要边界和重复邮箱回滚
 - 学到：Service 在 `flush` 时暴露邮箱唯一约束冲突，rollback 后转换为业务异常；原始 token 只返回给 Route，数据库保存 SHA-256 摘要
 - 学到：注册成功必须用新 Session 反查 User 和 AuthSession，才能证明 commit 后数据真实持久化
+- A3.3 登录 Service — ✓ 2026-10-26：完整测试 13 passed、Ruff clean；错误密码与未知邮箱统一为 `InvalidCredentialsError`，每次成功登录新增独立 AuthSession
+- 学到：邮箱查询用 `scalar_one_or_none()` 明确“零或一条”的契约，不用 `scalar()` 静默吞掉数据异常
+- 上线前待加固：未知邮箱与错误密码的 Argon2 时间差、登录 rate limit
+- A3.4 主动退出 Service — ✓ 2026-10-26：认证 Service 测试 7 passed、完整测试 14 passed；按 token 摘要删除 Session，重复退出与未知 token 均保持幂等
+- 学到：退出只撤销当前设备对应的 AuthSession；数据库行删除才是服务端失效，清除 Cookie 只是浏览器侧清理
+- 学到：幂等退出不先查询 token 是否存在，而是直接 DELETE 后 commit，行为稳定且不泄露 Session 信息
+- A3.5 当前用户 Session 校验 — ✓ 2026-10-26：认证 Service 测试 11 passed、完整测试 18 passed；JOIN User/AuthSession，校验 token 摘要与 expires_at，统一拒绝未知、过期和已撤销 Session
+- 学到：Opaque Session 每次受保护请求都要查数据库；token_hash 唯一索引把校验成本控制在一次小查询
+- 学到：认证只证明请求持有有效凭证；CSRF 防伪造、Trip 成员权限仍需独立校验
+
+### A4 认证 Route、Cookie 与 CSRF — 进行中
+
+- 目标：实现 register / login / logout / me 路由，由 Route 转换业务异常为 HTTP 状态码，并签发/清除 HttpOnly Session Cookie
+- 验收：浏览器自动携带 Cookie；刷新后 `/me` 恢复用户；退出立即失效；未登录受保护接口返回 401；跨站写请求被 Origin 检查拒绝
+- 概念：Cookie 属性、Set-Cookie、Origin 校验、HTTP 错误映射、FastAPI dependency
 
 ## 下一步
 
-A3.3 登录、当前用户和退出 Service：完成 Session 校验、过期判断、撤销和统一凭据错误；仍先不接 FastAPI 路由。
+A4 先定义 Cookie 配置和统一认证错误映射，再接 FastAPI Route；仍先不做前端页面。
 
 后续顺序：后端注册 / 登录 / 退出 / me → React Router 登录页与 App Shell → Trip → 非流式 Chat → SSE。
 

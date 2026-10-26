@@ -17,7 +17,7 @@ def verify_password(password: str, hashed_password: str) -> bool:
 
 
 def generate_session_token() -> str:
-    # 生成32字节随机字节token， 入库前再sha-256
+    # 生成32字节随机字节token， 入库前再sha-256, 会添加到cookie上
     return secrets.token_urlsafe(32)
 
 

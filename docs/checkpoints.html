@@ -120,6 +120,17 @@
       </ul>
       <blockquote>按数据威胁模型选择哈希：用户密码需要慢且带 salt 的 Argon2id；高熵 Session token 需要不可预测，数据库只保存可索引的 SHA-256 摘要。</blockquote>
     </article>
+    <article class="cp">
+      <header><span class="id">待提交</span><time>2026-10-26</time><h2>A3 认证 Service 与 Session 事务</h2></header>
+      <ul>
+        <li><code>AsyncSession</code> 的查询通过 <code>execute()</code> / <code>scalar_one_or_none()</code> 表达“零或一条”，写入通过 <code>add()</code>、<code>flush()</code>、<code>commit()</code> 推进</li>
+        <li>User 和 AuthSession 在同一事务中提交；唯一邮箱冲突在 flush 暴露，rollback 后转换为业务异常</li>
+        <li>登录每次创建独立 AuthSession；退出只删除当前设备的 token_hash 行，重复或未知 token 保持幂等</li>
+        <li>当前用户校验通过 User/AuthSession JOIN 同时检查 token 摘要与 expires_at；未知、过期、撤销统一为 InvalidSessionError</li>
+        <li>注册、登录、退出和当前用户均由真实 PostgreSQL 集成测试验证，使用独立测试库、随机数据和清理</li>
+      </ul>
+      <blockquote>认证 Service 的核心不是 CRUD 调用，而是明确 Session 作为服务端凭证的生命周期：创建与 User 同事务，校验时同时检查摘要和过期，撤销时直接可靠地删除。</blockquote>
+    </article>
   </div>
 </div>
 </body>
