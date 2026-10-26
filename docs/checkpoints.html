@@ -98,6 +98,39 @@
       </ul>
       <blockquote>健康检查的职责边界：依赖故障降级为字段值而非异常，存活信号与依赖状态互不污染。</blockquote>
     </article>
+    <article class="cp">
+      <header><span class="id">7df6fa2</span><time>2026-10-23</time><h2>A1 认证模型与数据库迁移</h2></header>
+      <ul>
+        <li><code>Base</code> 不是数据库连接：它是 ORM 模型共享的注册表，<code>Base.metadata</code> 收集所有表与约束，供 SQLAlchemy 和 Alembic 使用</li>
+        <li>模型通过 <code>Mapped[T]</code> 表达 Python 类型，通过 <code>mapped_column(...)</code> 表达主键、唯一约束、外键和默认值</li>
+        <li><code>users</code> 与 <code>auth_sessions</code> 是一对多关系；Session 使用外键和 <code>ON DELETE CASCADE</code>，支持多设备登录和立即撤销</li>
+        <li>Alembic 必须导入模型模块后才能看到共享 metadata；自动生成的迁移仍需检查约束名称、索引和 downgrade</li>
+        <li>模型、迁移文件和 PostgreSQL 实际结构是三层结构，分别检查后才能确认数据库设计与代码一致</li>
+      </ul>
+      <blockquote>用共享 Base 建立统一 ORM 注册表，用 typed mapping 描述模型，再用可审查、可回滚的迁移把 Python 结构可靠地落到 PostgreSQL。</blockquote>
+    </article>
+    <article class="cp">
+      <header><span class="id">0ac7e17</span><time>2026-10-23</time><h2>A2 密码与 Session token 安全原语</h2></header>
+      <ul>
+        <li>密码是低熵输入，使用带随机 salt 的 Argon2id；同一密码每次哈希不同，但仍能通过编码中保存的 salt 和参数验证</li>
+        <li>Session token 由 <code>secrets.token_urlsafe(32)</code> 生成，32 字节即 256 位安全随机熵；不能用普通 <code>random</code> 生成登录凭证</li>
+        <li>浏览器 Cookie 保存原始 token，PostgreSQL 只保存 <code>SHA-256</code> 摘要；数据库泄露不能直接得到可用登录凭证</li>
+        <li><code>hashlib.sha256()</code> 接收 bytes，<code>hexdigest()</code> 输出固定 64 字符的十六进制摘要，适合唯一索引查询</li>
+        <li>密码使用慢哈希抵抗离线猜测，token 因本身高熵而可使用确定性快哈希，以支持按 <code>token_hash</code> 直接查找 Session</li>
+      </ul>
+      <blockquote>按数据威胁模型选择哈希：用户密码需要慢且带 salt 的 Argon2id；高熵 Session token 需要不可预测，数据库只保存可索引的 SHA-256 摘要。</blockquote>
+    </article>
+    <article class="cp">
+      <header><span class="id">e279678</span><time>2026-10-26</time><h2>A3 认证 Service 与 Session 事务</h2></header>
+      <ul>
+        <li><code>AsyncSession</code> 的查询通过 <code>execute()</code> / <code>scalar_one_or_none()</code> 表达“零或一条”，写入通过 <code>add()</code>、<code>flush()</code>、<code>commit()</code> 推进</li>
+        <li>User 和 AuthSession 在同一事务中提交；唯一邮箱冲突在 flush 暴露，rollback 后转换为业务异常</li>
+        <li>登录每次创建独立 AuthSession；退出只删除当前设备的 token_hash 行，重复或未知 token 保持幂等</li>
+        <li>当前用户校验通过 User/AuthSession JOIN 同时检查 token 摘要与 expires_at；未知、过期、撤销统一为 InvalidSessionError</li>
+        <li>注册、登录、退出和当前用户均由真实 PostgreSQL 集成测试验证，使用独立测试库、随机数据和清理</li>
+      </ul>
+      <blockquote>认证 Service 的核心不是 CRUD 调用，而是明确 Session 作为服务端凭证的生命周期：创建与 User 同事务，校验时同时检查摘要和过期，撤销时直接可靠地删除。</blockquote>
+    </article>
   </div>
 </div>
 </body>

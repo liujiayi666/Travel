@@ -8,7 +8,7 @@ services:
     ports:
       - "5432:5432"
     volumes:
-      - pgdata:/var/lib/postgresql 
+      - pgdata:/var/lib/postgresql
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U travel -d travel"]
       interval: 5s
@@ -19,9 +19,9 @@ services:
     ports:
       - "8000:8000"
     environment:
-      DATABASE_URL: postgresql+psycopg://travel:travel@db:5432/travel
+      DATABASE_URL: postgresql+psycopg_async://travel:travel@db:5432/travel
     depends_on:
       db:
         condition: service_healthy
 volumes:
-  pgdata: 
+  pgdata:

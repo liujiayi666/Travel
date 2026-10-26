@@ -13,6 +13,7 @@
 |---|---|---|
 | 1 | 2026-10-15 | 模式确立：mentor 模式 + /tutor /accept skill + 参考骨架入库 |
 | 2 | 2026-10-16 | P0-6 backend 容器化（插入步）+ 部署路线图（docs/deploy.md） |
+| 3 | 2026-10-23 | 路线调整：认证优先；完成 User / AuthSession 模型和首份 Alembic 迁移 |
 
 ## 易错本
 
@@ -29,6 +30,19 @@
 - Docker Desktop 的代理/mirror 设置要点 Apply & restart 才落盘；它不继承系统/浏览器代理
 - 容器间互访：服务名=主机名 + 容器内部端口；published 端口只在宿主机上有意义
 - 国内直连 docker.io 是 DNS 污染（解析到假 IP）→ 走代理或 registry-mirror
+- SQLAlchemy 类型参数属于类型构造器：写 `String(320)`、`DateTime(timezone=True)`，不是 `Column` / `mapped_column` 的额外参数
+- `Base` 是应用自定义的 DeclarativeBase；模型从 `app.core.db` 引入它。只有模型模块被导入后，表才注册进共享的 `Base.metadata`
+- Ruff format 不整理 import；`I001` 用 `ruff check --fix`。Python 缩进决定语法结构，文件无法解析时格式化器不会猜修复意图
+- Alembic 的 Ruff `console_scripts` runner 找不到 Ruff 的 Python 入口；仓库使用 `exec` runner，并同时执行 `ruff check --fix` 和 `ruff format`
+- `PasswordHash.recommended()` 是类方法，不是 `PasswordHash().recommended()`；Argon2id 是 `pwdlib` 当前推荐哈希器
+- `hashlib.sha256()` 接收字节而不是字符串；`digest()` 是 32 字节，`hexdigest()` 是便于存 `VARCHAR(64)` 的 64 字符摘要
+- Session token 使用 32 字节（256 位）安全随机数，不是 32 位；`random` 不是密码学安全随机源
+- SQLAlchemy 异步功能依赖 `greenlet`，项目需要声明 `sqlalchemy[asyncio]`；psycopg 异步 URL 使用 `postgresql+psycopg_async://`，Alembic 再转回同步驱动
+- Pydantic `mode="before"` validator 收到原始输入，字段类型尚未生效；需要字符串方法时先检查类型，或把 validator 放到 after 阶段
+- `display_name` 需要 before validator 先 strip 再校验长度；密码不能 strip，使用 after validator 只拒绝全空白输入
+- `@pytest.mark.anyio` 只控制异步测试的事件循环，不会自动连接数据库；真实入库来自测试中创建 Engine 并执行 Service
+- 数据库集成测试必须在隔离的 `travel_test` 数据库运行；随机测试数据与 `finally` 清理只能作为补充，不能防止误用开发库
+- SQLAlchemy 包装数据库错误为 `sqlalchemy.exc.IntegrityError`，不是直接捕获底层 `psycopg.IntegrityError`
 
 ## Phase 0 — 项目骨架（重写参考骨架）
 
@@ -70,43 +84,53 @@
 - 关键代码（用户手写）：backend/Dockerfile、compose 的 api service
 - 外围（Claude 代写）：backend/.dockerignore
 
-## Phase 0 — 项目骨架（重写参考骨架）— ✓ 2026-10-15 全部完成
+## Phase A — 认证优先（提前实施）
 
-- 不重新生成：frontend/ 直接用 Claude 生成的参考版，由 Claude 逐文件讲解
-- 验收：`npm install && npm run dev` 跑起来；能说出每个生成文件的作用、哪些是脚手架噪音
-- 概念：脚手架是什么、Vite 的角色（dev server + 构建）、TS strict、ESLint flat config
+### A1 User / AuthSession 数据模型与首份迁移 — ✓ 2026-10-23
 
-### P0-2 vite proxy + App.tsx 健康页 — 待开始
+- 验收通过：`pytest` 2 passed；Alembic `upgrade head` 成功，版本 `4ed703ed0583`；在 PostgreSQL 中确认两张表、主键、唯一约束、索引和 `ON DELETE CASCADE`
+- 关键代码（用户手写）：`app/core/db.py` 的共享 Base / 约束命名、`app/auth/models.py` 的两个 typed mapping 模型
+- 外围（Codex 代写并讲解）：Alembic 配置、连接配置、迁移后置 Ruff hooks
+- 学到：`Mapped[T]` + `mapped_column` 让 Python 类型与数据库列映射在同一处表达；Session 独立建表使多设备登录与立即撤销成为可能；数据库只保存 token 摘要，原始 token 留给浏览器 Cookie
+- 学到：模型元数据、迁移文件与真实数据库是三层需要分别验证的结构；Alembic 生成迁移后仍要检查约束名称、外键行为和 downgrade
 
-- 验收：手写 fetch /api/healthz，页面三态（loading / ok / fail）；能答出 StrictMode 双请求现象及应对
-- 概念：useState/useEffect、TS 判别联合类型建模状态、dev proxy 原理
+### A2 密码与 Session token 安全工具 — ✓ 2026-10-23
 
-### P0-3 docker-compose 手写 — 待开始
+- 验收通过：`pytest` 7 passed，覆盖 Argon2id、随机 salt、正确/错误密码、URL-safe token 和 SHA-256 摘要
+- 关键代码（用户手写）：`app/core/security.py` 四个安全原语
+- 外围（Codex 代写并讲解）：`tests/test_security.py` 行为测试
+- 学到：密码使用带随机 salt 的 Argon2id；Session token 来自操作系统安全随机源，因熵足够高而可用确定性的 SHA-256 摘要建立数据库索引
+- 学到：原始 Session token 只进入 HttpOnly Cookie，数据库只保存摘要；密码和 token 的威胁模型不同，因此哈希算法选择不同
 
-- 前置：`mv docker-compose.yml docker-compose-ref.yml`
-- 验收：手写 compose 起 postgres:18-alpine，healthcheck 通过；能讲 image / container / volume / healthcheck
-- 概念：Docker 三件套、named volume 持久化、端口映射
+### A3 认证 Service 与 HTTP 契约 — ✓ 2026-10-26
 
-### P0-4 backend 逐文件重写 — 待开始
+- 目标：定义注册 / 登录 / 公开用户的 Pydantic Schema，创建请求级数据库 Session，实现注册、登录、查当前用户、退出的业务 Service
+- 验收：邮箱规范化及并发唯一冲突处理正确；注册和 Session 创建处于同一事务；密码、原始 token 和摘要边界清晰
+- 概念：dependency、事务边界、ORM Model 与 API Schema 分离、业务错误转换
+- A3.1 Schema、异步数据库依赖与健康检查 — ✓ 2026-10-23：`pytest` 7 passed、Ruff clean；AsyncSession 使用 `psycopg_async`，请求结束自动关闭
+- A3.2 注册 Service 与 PostgreSQL 集成测试 — ✓ 2026-10-26：在 `travel_test` 上 3 passed；验证邮箱规范化、User/AuthSession 同事务提交、密码/token 摘要边界和重复邮箱回滚
+- 学到：Service 在 `flush` 时暴露邮箱唯一约束冲突，rollback 后转换为业务异常；原始 token 只返回给 Route，数据库保存 SHA-256 摘要
+- 学到：注册成功必须用新 Session 反查 User 和 AuthSession，才能证明 commit 后数据真实持久化
+- A3.3 登录 Service — ✓ 2026-10-26：完整测试 13 passed、Ruff clean；错误密码与未知邮箱统一为 `InvalidCredentialsError`，每次成功登录新增独立 AuthSession
+- 学到：邮箱查询用 `scalar_one_or_none()` 明确“零或一条”的契约，不用 `scalar()` 静默吞掉数据异常
+- 上线前待加固：未知邮箱与错误密码的 Argon2 时间差、登录 rate limit
+- A3.4 主动退出 Service — ✓ 2026-10-26：认证 Service 测试 7 passed、完整测试 14 passed；按 token 摘要删除 Session，重复退出与未知 token 均保持幂等
+- 学到：退出只撤销当前设备对应的 AuthSession；数据库行删除才是服务端失效，清除 Cookie 只是浏览器侧清理
+- 学到：幂等退出不先查询 token 是否存在，而是直接 DELETE 后 commit，行为稳定且不泄露 Session 信息
+- A3.5 当前用户 Session 校验 — ✓ 2026-10-26：认证 Service 测试 11 passed、完整测试 18 passed；JOIN User/AuthSession，校验 token 摘要与 expires_at，统一拒绝未知、过期和已撤销 Session
+- 学到：Opaque Session 每次受保护请求都要查数据库；token_hash 唯一索引把校验成本控制在一次小查询
+- 学到：认证只证明请求持有有效凭证；CSRF 防伪造、Trip 成员权限仍需独立校验
 
-- 分工：pyproject.toml 由 Claude 代写讲解；core/config.py、core/db.py、main.py、tests 由用户手写（关键代码）
-- 顺序：pyproject.toml → uv sync → core/config.py → core/db.py → main.py → tests
-- 验收：`uv run pytest` 全绿 + `uv run ruff check .` 无告警；DB 断连时 healthz 返回 degraded 而不是 500
-- 概念：uv/pyproject（类比 package.json）、pydantic-settings、SQLAlchemy engine、FastAPI 路由
+### A4 认证 Route、Cookie 与 CSRF — 进行中
 
-### P0-5 端到端验收 + Phase 0 小结 — 待开始
-
-- 验收：浏览器 5173 显示 DB connected；能讲清完整链路（Vite proxy → uvicorn → psycopg → PG）
-- 概念：请求链路全景
+- 目标：实现 register / login / logout / me 路由，由 Route 转换业务异常为 HTTP 状态码，并签发/清除 HttpOnly Session Cookie
+- 验收：浏览器自动携带 Cookie；刷新后 `/me` 恢复用户；退出立即失效；未登录受保护接口返回 401；跨站写请求被 Origin 检查拒绝
+- 概念：Cookie 属性、Set-Cookie、Origin 校验、HTTP 错误映射、FastAPI dependency
 
 ## 下一步
 
-Phase 1 最小纵向切片（进行中）：前端输入 → `POST /api/chat` → DeepSeek 非流式回复 → 存 Message → 显示（含刷新后历史保留）。
+A4 先定义 Cookie 配置和统一认证错误映射，再接 FastAPI Route；仍先不做前端页面。
 
-准备：注册 platform.deepseek.com 拿 API Key（sk- 开头），之后放进 `backend/.env`（`DEEPSEEK_API_KEY` 等，不进 git）。
+后续顺序：后端注册 / 登录 / 退出 / me → React Router 登录页与 App Shell → Trip → 非流式 Chat → SSE。
 
-Phase 1 已定案（2026-10-16 讨论）：
-
-- 前端引入 Tailwind v4（@theme 写语义 token，分层：原始色阶 → 语义 → 组件），不引入组件库/路由/TanStack Query
-- 数据模型：单表 messages（id, conversation_id, role, content, created_at）；前端 localStorage 存 conversation_id（uuid）；`GET /api/messages?conversation_id=` 拉历史；暂不建 conversations 表
-- LLM 走 provider 接口隔离（OpenAI 兼容协议，base_url/model/key 读 .env），DeepSeek 先行；httpx 发请求；Phase 1 非流式
+准备：注册 platform.deepseek.com 拿 API Key（`sk-` 开头），后续放进 `backend/.env`；现在 A2 还不需要该密钥。
