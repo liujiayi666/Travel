@@ -40,6 +40,9 @@
 - SQLAlchemy 异步功能依赖 `greenlet`，项目需要声明 `sqlalchemy[asyncio]`；psycopg 异步 URL 使用 `postgresql+psycopg_async://`，Alembic 再转回同步驱动
 - Pydantic `mode="before"` validator 收到原始输入，字段类型尚未生效；需要字符串方法时先检查类型，或把 validator 放到 after 阶段
 - `display_name` 需要 before validator 先 strip 再校验长度；密码不能 strip，使用 after validator 只拒绝全空白输入
+- `@pytest.mark.anyio` 只控制异步测试的事件循环，不会自动连接数据库；真实入库来自测试中创建 Engine 并执行 Service
+- 数据库集成测试必须在隔离的 `travel_test` 数据库运行；随机测试数据与 `finally` 清理只能作为补充，不能防止误用开发库
+- SQLAlchemy 包装数据库错误为 `sqlalchemy.exc.IntegrityError`，不是直接捕获底层 `psycopg.IntegrityError`
 
 ## Phase 0 — 项目骨架（重写参考骨架）
 
@@ -105,10 +108,13 @@
 - 验收：邮箱规范化及并发唯一冲突处理正确；注册和 Session 创建处于同一事务；密码、原始 token 和摘要边界清晰
 - 概念：dependency、事务边界、ORM Model 与 API Schema 分离、业务错误转换
 - A3.1 Schema、异步数据库依赖与健康检查 — ✓ 2026-10-23：`pytest` 7 passed、Ruff clean；AsyncSession 使用 `psycopg_async`，请求结束自动关闭
+- A3.2 注册 Service 与 PostgreSQL 集成测试 — ✓ 2026-10-26：在 `travel_test` 上 3 passed；验证邮箱规范化、User/AuthSession 同事务提交、密码/token 摘要边界和重复邮箱回滚
+- 学到：Service 在 `flush` 时暴露邮箱唯一约束冲突，rollback 后转换为业务异常；原始 token 只返回给 Route，数据库保存 SHA-256 摘要
+- 学到：注册成功必须用新 Session 反查 User 和 AuthSession，才能证明 commit 后数据真实持久化
 
 ## 下一步
 
-A3 先完成 Schema、数据库 Session 依赖和认证 Service；Service 行为通过后再接 FastAPI 路由与 Cookie。
+A3.3 登录、当前用户和退出 Service：完成 Session 校验、过期判断、撤销和统一凭据错误；仍先不接 FastAPI 路由。
 
 后续顺序：后端注册 / 登录 / 退出 / me → React Router 登录页与 App Shell → Trip → 非流式 Chat → SSE。
 

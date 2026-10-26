@@ -1,6 +1,7 @@
 {
   "editor.insertSpaces": true,
   "editor.tabSize": 4,
+  "python.analysis.typeCheckingMode": "standard",
   "[python]": {
     "editor.defaultFormatter": "charliermarsh.ruff",
     "editor.formatOnSave": true,
@@ -8,5 +9,18 @@
       "source.fixAll.ruff": "explicit",
       "source.organizeImports.ruff": "explicit"
     }
-  }
+  },
+  "sqltools.connections": [
+    {
+      "ssh": "Disabled",
+      "previewLimit": 50,
+      "server": "localhost",
+      "port": 5432,
+      "askForPassword": true,
+      "driver": "PostgreSQL",
+      "name": "PostgreSQL",
+      "database": "travel",
+      "username": "travel"
+    }
+  ]
 }
