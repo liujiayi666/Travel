@@ -116,6 +116,7 @@ https://travel.example.com/ws/*   WebSocket
 ```text
 src/
   app/                 应用入口、Provider、Router
+  layouts/             固定应用布局、Sidebar、Content
   routes/              路由页面
   features/
     auth/               登录与用户状态
@@ -127,7 +128,7 @@ src/
   entities/             User、Trip、Message 等领域类型
   shared/
     api/                HTTP client、生成的 OpenAPI 类型
-    ui/                 通用 UI
+    components/         通用 UI 组件
     lib/                SSE parser、格式化、错误处理
 ```
 
