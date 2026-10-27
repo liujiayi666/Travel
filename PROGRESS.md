@@ -14,6 +14,7 @@
 | 1 | 2026-10-15 | 模式确立：mentor 模式 + /tutor /accept skill + 参考骨架入库 |
 | 2 | 2026-10-16 | P0-6 backend 容器化（插入步）+ 部署路线图（docs/deploy.md） |
 | 3 | 2026-10-23 | 路线调整：认证优先；完成 User / AuthSession 模型和首份 Alembic 迁移 |
+| 4 | 2026-10-27 | 完成 Cookie Session Route、统一错误映射与 Origin 校验 |
 
 ## 易错本
 
@@ -43,6 +44,11 @@
 - `@pytest.mark.anyio` 只控制异步测试的事件循环，不会自动连接数据库；真实入库来自测试中创建 Engine 并执行 Service
 - 数据库集成测试必须在隔离的 `travel_test` 数据库运行；随机测试数据与 `finally` 清理只能作为补充，不能防止误用开发库
 - SQLAlchemy 包装数据库错误为 `sqlalchemy.exc.IntegrityError`，不是直接捕获底层 `psycopg.IntegrityError`
+- VS Code 从仓库根目录自动导入时可能生成 `backend.app.*`；后端运行时的工作目录是 `backend/`，必须使用 `app.*`
+- FastAPI 传统 `Depends()` 默认参数会触发 Ruff B008；依赖声明应放进 `Annotated`，依赖仍在每个请求执行
+- 同一缺失 Cookie 对不同接口语义不同：`/me` 必须 401，`/logout` 已处于目标状态，应保持幂等并返回 204
+- 404 表示路由没有匹配；先确认实际运行的进程/容器和目标模块，再排查认证中间件或 dependency
+- 测试环境保护不仅要设置隔离库，还要在收集用例前校验实际数据库名；统一命令入口与分 stage 编排是后续课题
 
 ## Phase 0 — 项目骨架（重写参考骨架）
 
@@ -121,16 +127,33 @@
 - 学到：Opaque Session 每次受保护请求都要查数据库；token_hash 唯一索引把校验成本控制在一次小查询
 - 学到：认证只证明请求持有有效凭证；CSRF 防伪造、Trip 成员权限仍需独立校验
 
-### A4 认证 Route、Cookie 与 CSRF — 进行中
+### A4 认证 Route、Cookie 与 CSRF — ✓ 2026-10-27
 
 - 目标：实现 register / login / logout / me 路由，由 Route 转换业务异常为 HTTP 状态码，并签发/清除 HttpOnly Session Cookie
 - 验收：浏览器自动携带 Cookie；刷新后 `/me` 恢复用户；退出立即失效；未登录受保护接口返回 401；跨站写请求被 Origin 检查拒绝
 - 概念：Cookie 属性、Set-Cookie、Origin 校验、HTTP 错误映射、FastAPI dependency
+- 验收通过：合法注册 `201`、登录 `200`、错误密码 `401`、跨站 Origin `403`；浏览器刷新后 `/me` 恢复用户，退出 `204` 后 `/me` 返回 `401`，重复退出仍为 `204`
+- 验收通过：最终 Ruff、format 与 pytest 由用户确认全部通过；pytest 启动保护会强制 `APP_ENV=test` 和 `travel_test`，数据库名不符时在收集用例前终止
+- 关键代码（用户手写）：`app/auth/cookies.py`、`dependencies.py`、`errors.py`、`router.py` 与认证配置
+- 外围（Codex 代写并讲解）：pytest 测试数据库启动保护
+- 学到：Session Cookie 的安全性来自多个属性协同：HttpOnly 限制脚本读取，SameSite 限制跨站自动携带，Secure 由环境决定，Path 决定发送范围，服务端 expires_at 才是最终有效性依据
+- 学到：依赖按职责拆分：optional token 只提取凭证，required token 负责拒绝缺失凭证，current user 组合数据库校验；同一 Cookie 在 `/me` 和 `/logout` 上应映射为不同的 HTTP 语义
+- 学到：Origin 校验是 SameSite 之外的显式防线，必须精确比较 scheme + host + port，并拒绝缺失或 `null`；它只保护状态修改请求
+- 学到：清除 Cookie 只处理浏览器副本，服务端删除 AuthSession 才完成当前设备的凭证撤销；重复退出返回 204 是为了客户端可安全重试
+- 面试向：基于 opaque Session 的认证把“浏览器持有原始 token”和“数据库保存摘要”分开，再通过请求级 dependency、统一错误映射与 Origin 校验，把身份恢复、撤销和 CSRF 防护收敛到清晰的安全边界
+
+### A5 前端登录页与 App Shell — 下一步
+
+- 目标：引入 React Router，建立登录页与受保护的 App Shell，消费现有 register / login / logout / me API
+- 验收：刷新恢复登录、未登录重定向、退出后回到登录页；前端不读取 HttpOnly Cookie 或直接操作 token
+- 状态：待开始；进入后由 /tutor 细化拆分
 
 ## 下一步
 
-A4 先定义 Cookie 配置和统一认证错误映射，再接 FastAPI Route；仍先不做前端页面。
+进入 A5：React Router 登录页与 App Shell。前端只消费应用自己的 `/api`，不得读取或持久化 HttpOnly Session token。
 
-后续顺序：后端注册 / 登录 / 退出 / me → React Router 登录页与 App Shell → Trip → 非流式 Chat → SSE。
+后续顺序：React Router 登录页与 App Shell → Trip → 非流式 Chat → SSE。
+
+测试环境 TODO（后续学习）：评估 nox/tox 或 Makefile 等统一入口，区分 unit / integration-local / integration-CI / e2e 的依赖与数据库配置；生产数据库永远不参与测试。
 
 准备：注册 platform.deepseek.com 拿 API Key（`sk-` 开头），后续放进 `backend/.env`；现在 A2 还不需要该密钥。

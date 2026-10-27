@@ -22,5 +22,9 @@
       "database": "travel",
       "username": "travel"
     }
+  ],
+  "python.terminal.useEnvFile": true,
+  "python.analysis.extraPaths": [
+    "${workspaceFolder}/backend"
   ]
 }
