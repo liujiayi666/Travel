@@ -5,7 +5,22 @@
 
 ## 学习模式
 
-手写关键代码加深理解：Claude 给目标、讲解和 TODO 骨架，代码我写、命令我跑；每步 /accept 验收通过才算完成。
+手写关键代码加深理解：Codex 给目标、讲解和 TODO 骨架，关键代码由我写；开发与运行命令默认由我跑，明确委托的机械性 Git 操作由 Codex 执行。每步 /accept 验收通过才算完成。
+
+## 目标与能力主线
+
+学习目标是转向 AI Agent 工程，不以堆叠全栈功能为目标。后续每个 step 都应尽量落到下列能力之一，并在 /accept 中记录可复查证据。
+
+| 能力 | 需要产出什么证据 |
+|---|---|
+| LLM Provider 边界 | 业务层不依赖供应商原始事件；用 fake provider 可测试切换与失败 |
+| Tool contract | Schema 校验、权限检查、超时、错误返回和非法参数测试 |
+| Agent loop | 明确状态机、最大步骤/时长/token、成功/失败/取消都能终止 |
+| Prompt injection 与权限 | 越权、恶意工具参数和跨用户访问都有拒绝用例 |
+| Trace 与成本 | 可查看 run/tool 轨迹、耗时、token 和失败原因 |
+| Eval | 固定场景集覆盖正常、工具失败、越权、达到上限和可接受降级 |
+
+这些能力从首次接入 LLM 开始逐步建立，不等到所谓“Agent 阶段”才开始。
 
 ## Session 记录
 
@@ -144,15 +159,25 @@
 
 ### A5 前端登录页与 App Shell — 下一步
 
-- 目标：引入 React Router，建立登录页与受保护的 App Shell，消费现有 register / login / logout / me API
-- 验收：刷新恢复登录、未登录重定向、退出后回到登录页；前端不读取 HttpOnly Cookie 或直接操作 token
-- 状态：待开始；进入后由 /tutor 细化拆分
+- 目标：引入 React Router，建立最小登录页与受保护的 App Shell，消费现有 register / login / logout / me API；本步不追求视觉打磨
+- 验收：刷新恢复登录、未登录重定向、退出后回到登录页；前端不读取 HttpOnly Cookie 或持久化 token；认证未知态与网络错误可区分
+- 能力连接：建立后续 Trip、会话和 Agent 工具调用所需的用户身份边界
+- 状态：待开始；进入后由 /tutor 给出 TODO 骨架
 
 ## 下一步
 
-进入 A5：React Router 登录页与 App Shell。前端只消费应用自己的 `/api`，不得读取或持久化 HttpOnly Session token。
+进入 A5：React Router 登录页与 App Shell。前端只消费应用自己的 `/api`，不得读取或持久化 HttpOnly Session token。A5 完成后尽快形成 Agent 最小纵向切片。
 
-后续顺序：React Router 登录页与 App Shell → Trip → 非流式 Chat → SSE。
+后续顺序：
+
+1. A5：最小登录页与 App Shell
+2. A6：Trip 最小创建与读取
+3. A7：Provider 边界 + 非流式 Chat + Message 持久化
+4. A8：Agent 核心（单工具、循环、限额、trace、eval）
+5. A9：SSE 流式展示、取消与错误恢复
+6. 文件上传、WebSocket 协作、工程化与性能专项
+
+Agent 核心能力不延后到文件上传和协作功能之后。每个 A6–A8 步骤在开始前由 /tutor 补充具体目标、验收和证据要求。
 
 测试环境 TODO（后续学习）：评估 nox/tox 或 Makefile 等统一入口，区分 unit / integration-local / integration-CI / e2e 的依赖与数据库配置；生产数据库永远不参与测试。
 
