@@ -100,6 +100,8 @@
     "display": { "$type": "typography", "$value": { "fontFamily": "Inter", "fontWeight": 600, "fontSize": "32px", "lineHeight": "40px", "letterSpacing": "-0.6px" } },
     "heading": { "$type": "typography", "$value": { "fontFamily": "Inter", "fontWeight": 600, "fontSize": "24px", "lineHeight": "32px", "letterSpacing": "-0.4px" } },
     "title": { "$type": "typography", "$value": { "fontFamily": "Inter", "fontWeight": 600, "fontSize": "20px", "lineHeight": "28px", "letterSpacing": "-0.2px" } },
+    "brand": { "$type": "typography", "$value": { "fontFamily": "Inter", "fontWeight": 600, "fontSize": "16px", "lineHeight": "24px" } },
+    "ui": { "$type": "typography", "$value": { "fontFamily": "Inter", "fontWeight": 400, "fontSize": "15px", "lineHeight": "22px" } },
     "body": { "$type": "typography", "$value": { "fontFamily": "Inter", "fontWeight": 400, "fontSize": "16px", "lineHeight": "26px" } },
     "body-small": { "$type": "typography", "$value": { "fontFamily": "Inter", "fontWeight": 400, "fontSize": "14px", "lineHeight": "22px" } },
     "label": { "$type": "typography", "$value": { "fontFamily": "Inter", "fontWeight": 600, "fontSize": "14px", "lineHeight": "20px" } },

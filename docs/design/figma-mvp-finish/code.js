@@ -4,9 +4,12 @@ const BRAND_TOGGLE_NAME = 'Brand collapse / Updated';
 const ROW_PATTERN = /^\d{2}\s*\/\s*/;
 const OWNER_KEY = 'roamwiseMvpOwner';
 const OWNER_VALUE = 'v2';
+const AUTH_MODAL_HEIGHT = 640;
+const ACCOUNT_MENU_STATE_NAME = '09 / Account menu — open';
 const SIDEBAR_COMPONENT_NAMES = new Set([
   'Sidebar / Workspace / Signed in',
   'Sidebar / Workspace / Signed out',
+  'Sidebar / Workspace / Account menu open',
 ]);
 const AUTH_FIELD_COMPONENT_NAMES = new Set([
   'Auth / Text Field / Default',
@@ -37,6 +40,11 @@ function isOwned(node) {
     current = current.parent;
   }
   return false;
+}
+
+function reportProgress(step) {
+  console.log(`[roamwise] ${step}`);
+  figma.ui.postMessage({ type: 'progress', step });
 }
 
 function claimLegacyMvpPage(page) {
@@ -350,7 +358,22 @@ async function getTextStyles() {
     }
     return style;
   };
+  const ensure = (name, fontName, fontSize, lineHeight) => {
+    let style = all.find(item => item.name === `Travel / ${name}`);
+    if (!style) {
+      style = figma.createTextStyle();
+      style.name = `Travel / ${name}`;
+    }
+    style.fontName = fontName;
+    style.fontSize = fontSize;
+    style.lineHeight = { unit: 'PIXELS', value: lineHeight };
+    style.letterSpacing = { unit: 'PERCENT', value: 0 };
+    return style;
+  };
+  const brand = ensure('Brand', { family: 'Inter', style: 'Semi Bold' }, 16, 24);
+  const ui = ensure('UI', { family: 'Inter', style: 'Regular' }, 15, 22);
   return {
+    brand,
     display: resolve('Display'),
     heading: resolve('Heading'),
     title: resolve('Title'),
@@ -358,6 +381,7 @@ async function getTextStyles() {
     bodySmall: resolve('Body Small'),
     label: resolve('Label'),
     caption: resolve('Caption'),
+    ui,
   };
 }
 
@@ -405,10 +429,48 @@ function iconFrame(parent, name, width, height, fill, icon, iconSize = 20, iconC
   return frame;
 }
 
-async function createSidebar(page, tokens, styles, signedIn, x, y) {
+async function createAccountPopover(parent, tokens, styles) {
+  const popover = createFrame(parent, 'Account popover / Open', 0, -66, 220, 56, {
+    fill: bindPaint(tokens['color/bg/surface']),
+    stroke: bindPaint(tokens['color/border/default']),
+    radius: 16,
+  });
+  popover.layoutPositioning = 'ABSOLUTE';
+  popover.x = 0;
+  popover.y = -66;
+  popover.effects = [{
+    type: 'DROP_SHADOW',
+    color: { r: 0.047, g: 0.082, b: 0.071, a: 0.16 },
+    offset: { x: 0, y: 16 },
+    radius: 40,
+    spread: -20,
+    visible: true,
+    blendMode: 'NORMAL',
+  }];
+
+  const item = createFrame(popover, 'Account action / Sign out', 0, 0, 220, 56, {
+    radius: 16,
+  });
+  await addText(
+    item,
+    'Sign out',
+    18,
+    18,
+    styles.ui,
+    bindPaint(tokens['color/text/primary']),
+    { name: 'Sign out label' },
+  );
+  return popover;
+}
+
+async function createSidebar(page, tokens, styles, signedIn, x, y, options = {}) {
   const component = figma.createComponent();
   page.appendChild(component);
-  component.name = signedIn ? 'Sidebar / Workspace / Signed in' : 'Sidebar / Workspace / Signed out';
+  component.name = signedIn
+    ? options.accountMenuOpen
+      ? 'Sidebar / Workspace / Account menu open'
+      : 'Sidebar / Workspace / Signed in'
+    : 'Sidebar / Workspace / Signed out';
   component.resize(260, 900);
   component.x = x;
   component.y = y;
@@ -430,7 +492,7 @@ async function createSidebar(page, tokens, styles, signedIn, x, y) {
   const wordmark = createAuto(brand, 'Brand wordmark', 'VERTICAL', 1, 40);
   wordmark.layoutSizingHorizontal = 'FILL';
   wordmark.primaryAxisAlignItems = 'CENTER';
-  await addText(wordmark, 'roamwise', 0, 0, styles.title, bindPaint(tokens['color/text/primary']), { name: 'Brand name' });
+  await addText(wordmark, 'roamwise', 0, 0, styles.brand, bindPaint(tokens['color/text/primary']), { name: 'Brand name' });
   const spacer = createAuto(brand, 'Spacer', 'HORIZONTAL', 1, 1);
   spacer.layoutSizingHorizontal = 'FILL';
   const collapse = iconFrame(brand, 'Collapse sidebar', 28, 28, bindPaint(tokens['color/bg/surface']), `<svg width="18" height="18" viewBox="0 0 18 18"><rect x="2" y="3" width="14" height="12" rx="3" fill="none" stroke="currentColor" stroke-width="1.3"/><path d="M7 3V15M11 7L9 9L11 11" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>`, 18, tokens['color/text/nav']);
@@ -460,7 +522,7 @@ async function createSidebar(page, tokens, styles, signedIn, x, y) {
       radius: 8,
     });
     addSvg(icon, `${item.label} glyph`, 2, 2, 20, navIcon(item.icon), colorNode);
-    await addText(row, item.label, 0, 0, styles.bodySmall, bindPaint(colorNode), { name: 'Workspace item' });
+    await addText(row, item.label, 0, 0, styles.ui, bindPaint(colorNode), { name: 'Workspace item' });
     if (item.selected) {
       const fill = createAuto(row, 'Nav spacer', 'HORIZONTAL', 1, 1);
       fill.layoutSizingHorizontal = 'FILL';
@@ -483,7 +545,7 @@ async function createSidebar(page, tokens, styles, signedIn, x, y) {
     row.paddingRight = 14;
     row.cornerRadius = 10;
     if (active) row.fills = [bindPaint(tokens['color/bg/brand-subtle'])];
-    await addText(row, title, 0, 0, styles.bodySmall, bindPaint(active ? tokens['color/text/primary'] : tokens['color/text/secondary']), { name: 'Chat title' });
+    await addText(row, title, 0, 0, styles.ui, bindPaint(active ? tokens['color/text/primary'] : tokens['color/text/secondary']), { name: 'Chat title' });
   }
 
   const flexible = createAuto(component, 'Footer spacer', 'HORIZONTAL', 220, 1);
@@ -497,10 +559,22 @@ async function createSidebar(page, tokens, styles, signedIn, x, y) {
   divider.strokes = [bindPaint(tokens['color/border/subtle'])];
   divider.strokeWeight = 1;
 
-  const account = createAuto(component, 'Account row', 'HORIZONTAL', 220, 54);
+  const account = createAuto(
+    component,
+    options.accountMenuOpen ? 'Account row / Open' : 'Account row',
+    'HORIZONTAL',
+    220,
+    54,
+  );
   account.layoutSizingHorizontal = 'FILL';
   account.counterAxisAlignItems = 'CENTER';
   account.itemSpacing = 10;
+  if (options.accountMenuOpen) {
+    account.fills = [bindPaint(tokens['color/bg/muted'])];
+    account.cornerRadius = 12;
+    account.paddingLeft = 8;
+    account.paddingRight = 8;
+  }
   const avatar = createFrame(account, 'Avatar', 0, 0, 38, 38, {
     fill: bindPaint(signedIn ? tokens['color/bg/brand-tile'] : tokens['color/bg/muted']),
     radius: 19,
@@ -509,10 +583,17 @@ async function createSidebar(page, tokens, styles, signedIn, x, y) {
   const who = createAuto(account, 'Account text', 'VERTICAL', 1, 42);
   who.layoutSizingHorizontal = 'FILL';
   who.primaryAxisAlignItems = 'CENTER';
-  await addText(who, signedIn ? 'Jamie Lee' : 'Guest', 0, 0, styles.label, bindPaint(tokens['color/text/primary']), { name: 'Account name' });
-  await addText(who, signedIn ? 'Free plan' : 'Save your trips', 0, 0, styles.caption, bindPaint(tokens['color/text/nav']), { name: 'Account status' });
+  const accountName = await addText(who, signedIn ? 'Jamie Lee' : 'Guest', 0, 0, styles.ui, bindPaint(tokens['color/text/primary']), { name: 'Account name' });
+  accountName.fontName = { family: 'Inter', style: 'Semi Bold' };
+  await addText(who, signedIn ? 'Free plan' : 'Save your trips', 0, 0, styles.bodySmall, bindPaint(tokens['color/text/nav']), { name: 'Account status' });
   if (signedIn) {
-    addSvg(account, 'Account chevron', 202, 22, 12, '<svg width="12" height="12" viewBox="0 0 12 12"><path d="M2 4L6 8L10 4" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>', tokens['color/text/nav']);
+    const chevronPath = options.accountMenuOpen
+      ? 'M2 8L6 4L10 8'
+      : 'M2 4L6 8L10 4';
+    addSvg(account, 'Account chevron', 202, 22, 12, `<svg width="12" height="12" viewBox="0 0 12 12"><path d="${chevronPath}" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>`, tokens['color/text/nav']);
+    if (options.accountMenuOpen) {
+      await createAccountPopover(account, tokens, styles);
+    }
   } else {
     const signIn = createAuto(account, 'Sign in CTA', 'HORIZONTAL', 58, 28);
     signIn.counterAxisAlignItems = 'CENTER';
@@ -552,7 +633,9 @@ async function restoreStateFramesIfNeeded(page) {
 }
 
 async function replaceSidebars(page, tokens, styles) {
-  const states = page.children.filter(isStateFrame);
+  const states = page.children
+    .filter(isStateFrame)
+    .filter(frame => frame.name !== ACCOUNT_MENU_STATE_NAME);
   const targets = [];
   for (const frame of states) {
     const sidebar = frame.children.find(node => node.type === 'INSTANCE' && node.name.startsWith('Sidebar /'));
@@ -571,13 +654,55 @@ async function replaceSidebars(page, tokens, styles) {
   }
   const signedIn = await createSidebar(page, tokens, styles, true, 64, 3610);
   const signedOut = await createSidebar(page, tokens, styles, false, 376, 3610);
+  const accountMenuOpen = await createSidebar(
+    page,
+    tokens,
+    styles,
+    true,
+    688,
+    3610,
+    { accountMenuOpen: true },
+  );
   for (const target of targets) {
     const instance = (target.signedIn ? signedIn : signedOut).createInstance();
     target.frame.insertChild(0, instance);
     instance.resize(260, 900);
     instance.layoutSizingVertical = 'FILL';
   }
-  return { signedIn, signedOut, targetCount: targets.length };
+  return {
+    signedIn,
+    signedOut,
+    accountMenuOpen,
+    targetCount: targets.length,
+  };
+}
+
+async function rebuildAccountMenuState(page, accountMenuOpen) {
+  const previous = page.findOne(
+    node => node.type === 'FRAME' && node.name === ACCOUNT_MENU_STATE_NAME,
+  );
+  if (previous) previous.remove();
+
+  const base = page.findOne(
+    node => node.type === 'FRAME' && node.name === '01 / New chat — blank',
+  );
+  if (!base) throw new Error('Blank state frame is missing.');
+
+  const state = base.clone();
+  state.name = ACCOUNT_MENU_STATE_NAME;
+  state.x = 3240;
+  state.y = 3120;
+
+  const sidebar = state.children.find(
+    node => node.type === 'INSTANCE' && node.name.startsWith('Sidebar /'),
+  );
+  if (sidebar) sidebar.remove();
+
+  const instance = accountMenuOpen.createInstance();
+  state.insertChild(0, instance);
+  instance.resize(260, 900);
+  instance.layoutSizingVertical = 'FILL';
+  return state;
 }
 
 function createCollapsedSidebar(page, tokens, styles) {
@@ -717,6 +842,7 @@ async function createThemeVariantSets(page, darkTokens) {
     { name: 'Composer / Waiting', layout: 'VERTICAL' },
     { name: 'Sidebar / Workspace / Signed in', layout: 'HORIZONTAL' },
     { name: 'Sidebar / Workspace / Signed out', layout: 'HORIZONTAL' },
+    { name: 'Sidebar / Workspace / Account menu open', layout: 'HORIZONTAL' },
     { name: 'Auth modal / Sign in', layout: 'HORIZONTAL' },
     { name: 'Auth modal / Create account', layout: 'HORIZONTAL' },
   ];
@@ -876,8 +1002,15 @@ async function createWholeScreenThemeVariants(page, darkTokens, tokens, styles) 
     .filter(node => !node.name.includes('Dark mode'));
   const masters = [];
   for (const [index, frame] of stateFrames.entries()) {
+    const sourceName = frame.name;
     const clone = frame.clone();
     clone.name = 'Theme=Light';
+    if (sourceName.includes('Signed out')) {
+      const modalName = authModalNameForFrame(sourceName);
+      const modalComponent = findLightComponent(page, modalName);
+      if (!modalComponent) throw new Error(`Missing auth modal for ${modalName}`);
+      ensureAuthOverlay(clone, modalComponent, tokens);
+    }
     const light = figma.createComponentFromNode(clone);
     light.name = 'Theme=Light';
     const dark = light.clone();
@@ -973,11 +1106,29 @@ async function loadAndFixText(page) {
   return textNodes.length;
 }
 
-function fixStateHeaders(page) {
+async function fixStateHeaders(page, tokens, styles) {
   const headers = page.findAllWithCriteria({ types: ['FRAME'] }).filter(node => node.name === 'Header');
   for (const header of headers) {
     const title = header.children.find(node => node.type === 'FRAME' && node.name === 'Header title');
-    if (title) title.layoutSizingHorizontal = 'FILL';
+    if (title) {
+      title.layoutSizingHorizontal = 'FILL';
+      const textNodes = title.findAllWithCriteria({ types: ['TEXT'] });
+      const titleLabel = textNodes.find(node => node.characters.trim() === 'New chat') || textNodes[0];
+      if (titleLabel) {
+        await loadFontsForNodes([titleLabel]);
+        await titleLabel.setTextStyleIdAsync(styles.title.id);
+        titleLabel.fontSize = styles.title.fontSize;
+        titleLabel.lineHeight = styles.title.lineHeight;
+        titleLabel.letterSpacing = styles.title.letterSpacing;
+        titleLabel.fills = [bindPaint(tokens['color/text/primary'])];
+      }
+      const subtitle = textNodes.find(node => node !== titleLabel);
+      if (subtitle) {
+        await loadFontsForNodes([subtitle]);
+        await subtitle.setTextStyleIdAsync(styles.ui.id);
+        subtitle.fills = [bindPaint(tokens['color/text/secondary'])];
+      }
+    }
     const spacer = header.children.find(node => node.name === 'Spacer');
     if (spacer) spacer.visible = false;
   }
@@ -1115,7 +1266,7 @@ async function createAuthModal(page, tokens, styles, kind, fieldVariants, x, y) 
   component.name = kind === 'signIn' ? 'Auth modal / Sign in' : 'Auth modal / Create account';
   component.x = x;
   component.y = y;
-  component.resize(400, 120);
+  component.resize(400, AUTH_MODAL_HEIGHT);
   component.fills = [bindPaint(tokens['color/bg/surface'])];
   component.cornerRadius = 20;
   component.strokes = [bindPaint(tokens['color/border/subtle'])];
@@ -1130,13 +1281,14 @@ async function createAuthModal(page, tokens, styles, kind, fieldVariants, x, y) 
     blendMode: 'NORMAL',
   }];
   component.layoutMode = 'VERTICAL';
-  component.paddingLeft = 28;
-  component.paddingRight = 28;
-  component.paddingTop = 28;
-  component.paddingBottom = 28;
-  component.itemSpacing = 18;
+  component.paddingLeft = 24;
+  component.paddingRight = 24;
+  component.paddingTop = 24;
+  component.paddingBottom = 24;
+  component.itemSpacing = 14;
   component.counterAxisSizingMode = 'FIXED';
-  component.primaryAxisSizingMode = 'AUTO';
+  component.primaryAxisSizingMode = 'FIXED';
+  component.clipsContent = true;
 
   const head = createAuto(component, 'Modal header', 'HORIZONTAL', 344, 40);
   head.layoutSizingHorizontal = 'FILL';
@@ -1200,30 +1352,25 @@ async function createAuthModal(page, tokens, styles, kind, fieldVariants, x, y) 
   }
 
   if (kind === 'signIn') {
-    const forgot = await addText(component, 'Forgot password?', 0, 0, styles.caption, bindPaint(tokens['color/text/brand']), {
-      name: 'Forgot password',
-      width: 344,
-      align: 'RIGHT',
-    });
+    const supportRow = createAuto(component, 'Password support row', 'HORIZONTAL', 344, 22);
+    supportRow.layoutSizingHorizontal = 'FILL';
+    supportRow.counterAxisAlignItems = 'CENTER';
+    supportRow.primaryAxisAlignItems = 'MAX';
+    const forgot = await addText(
+      supportRow,
+      'Forgot password?',
+      0,
+      0,
+      styles.caption,
+      bindPaint(tokens['color/text/brand']),
+      { name: 'Forgot password', align: 'RIGHT' },
+    );
     forgot.layoutSizingHorizontal = 'FILL';
-  } else {
-    const termsRow = createAuto(component, 'Terms row', 'HORIZONTAL', 344, 24);
-    termsRow.layoutSizingHorizontal = 'FILL';
-    termsRow.counterAxisAlignItems = 'CENTER';
-    termsRow.itemSpacing = 8;
-    const checkbox = figma.createRectangle();
-    termsRow.appendChild(checkbox);
-    checkbox.name = 'Terms checkbox';
-    checkbox.resize(18, 18);
-    checkbox.cornerRadius = 4;
-    checkbox.fills = [bindPaint(tokens['color/bg/surface'])];
-    checkbox.strokes = [bindPaint(tokens['color/border/default'])];
-    checkbox.strokeWeight = 1;
-    const terms = await addText(termsRow, 'I agree to the Terms and Privacy Policy', 0, 0, styles.caption, bindPaint(tokens['color/text/secondary']), {
-      name: 'Terms',
-    });
-    terms.layoutSizingHorizontal = 'FILL';
   }
+
+  const flexibleSpace = createAuto(component, 'Modal flexible space', 'HORIZONTAL', 344, 1);
+  flexibleSpace.layoutSizingHorizontal = 'FILL';
+  flexibleSpace.layoutGrow = 1;
 
   const primary = findLightComponent(page, 'Button / Primary');
   if (!primary) throw new Error('Primary button component is missing.');
@@ -1237,32 +1384,82 @@ async function createAuthModal(page, tokens, styles, kind, fieldVariants, x, y) 
     buttonLabel.characters = kind === 'signIn' ? 'Sign in' : 'Create account';
   }
 
-  const footer = await addText(
-    component,
-    kind === 'signIn' ? 'New to roamwise? Create an account' : 'Already have an account? Sign in',
+  const footer = createAuto(component, 'Modal footer', 'HORIZONTAL', 344, 20);
+  footer.layoutSizingHorizontal = 'FILL';
+  footer.counterAxisAlignItems = 'CENTER';
+  footer.primaryAxisAlignItems = 'CENTER';
+  footer.itemSpacing = 4;
+  await addText(
+    footer,
+    kind === 'signIn' ? 'New to roamwise?' : 'Already have an account?',
     0,
     0,
     styles.bodySmall,
     bindPaint(tokens['color/text/secondary']),
-    { name: 'Modal footer', width: 344, align: 'CENTER' },
+    { name: 'Modal footer prompt' },
   );
-  footer.layoutSizingHorizontal = 'FILL';
+  await addText(
+    footer,
+    kind === 'signIn' ? 'Create an account' : 'Sign in',
+    0,
+    0,
+    styles.label,
+    bindPaint(tokens['color/text/brand']),
+    { name: 'Modal footer action' },
+  );
   return component;
 }
 
-async function rebuildAuthModals(page, tokens, styles) {
-  const stateFrames = page.children.filter(isStateFrame);
-  const overlays = [];
-  for (const frame of stateFrames) {
-    if (!frame.name.includes('Signed out')) continue;
-    const overlay = frame.children.find(node => node.type === 'FRAME' && node.name === 'Modal scrim');
-    if (!overlay) continue;
-    for (const child of [...overlay.children]) {
-      if (child.type === 'INSTANCE' && child.name.startsWith('Auth modal /')) child.remove();
-    }
-    overlay.fills = [bindPaint(tokens['color/text/primary'], 0.08)];
-    overlays.push({ frame, overlay, kind: frame.name.includes('create account') ? 'signUp' : 'signIn' });
+function authModalNameForFrame(frameName) {
+  return /create account|register|sign up/i.test(frameName)
+    ? 'Auth modal / Create account'
+    : 'Auth modal / Sign in';
+}
+
+function ensureAuthOverlay(frame, modalComponent, tokens) {
+  let overlay = frame.findOne(
+    node => node.type === 'FRAME' && /modal scrim/i.test(node.name),
+  );
+  if (!overlay) {
+    overlay = createFrame(frame, 'Modal scrim', 0, 0, frame.width, frame.height);
   }
+
+  if (overlay.parent !== frame) {
+    frame.appendChild(overlay);
+  } else {
+    frame.insertChild(frame.children.length - 1, overlay);
+  }
+
+  overlay.layoutMode = 'NONE';
+  overlay.resize(frame.width, frame.height);
+  overlay.x = 0;
+  overlay.y = 0;
+  overlay.visible = true;
+  overlay.clipsContent = false;
+  overlay.fills = [solid('#0C1512', 0.52)];
+
+  for (const child of [...overlay.children]) {
+    if (child.name.startsWith('Auth modal /')) child.remove();
+  }
+
+  const modal = modalComponent.createInstance();
+  overlay.appendChild(modal);
+  modal.visible = true;
+  modal.x = (frame.width - modal.width) / 2;
+  modal.y = (frame.height - modal.height) / 2;
+  return modal;
+}
+
+async function rebuildAuthModals(page, tokens, styles) {
+  const stateFrames = page.children
+    .filter(isStateFrame)
+    .filter(frame => frame.name.includes('Signed out'));
+  const signInState = stateFrames.some(frame => !/create account|register|sign up/i.test(frame.name));
+  const signUpState = stateFrames.some(frame => /create account|register|sign up/i.test(frame.name));
+  if (!signInState || !signUpState) {
+    throw new Error('Both signed-out sign-in and create-account states are required.');
+  }
+
   for (const node of [...page.children]) {
     if (
       isOwned(node) &&
@@ -1286,19 +1483,19 @@ async function rebuildAuthModals(page, tokens, styles) {
   }
   const signIn = await createAuthModal(page, tokens, styles, 'signIn', fieldVariants, 220, 4800);
   const signUp = await createAuthModal(page, tokens, styles, 'signUp', fieldVariants, 704, 4800);
-  for (const item of overlays) {
-    const modal = (item.kind === 'signUp' ? signUp : signIn).createInstance();
-    item.overlay.appendChild(modal);
-    modal.x = (1440 - modal.width) / 2;
-    modal.y = (900 - modal.height) / 2;
+  for (const frame of stateFrames) {
+    const modalComponent = authModalNameForFrame(frame.name) === 'Auth modal / Create account'
+      ? signUp
+      : signIn;
+    ensureAuthOverlay(frame, modalComponent, tokens);
   }
-  return { signIn, signUp, fieldVariants, overlayCount: overlays.length };
+  return { signIn, signUp, fieldVariants, overlayCount: stateFrames.length };
 }
 
 function arrangeComponentArea(page) {
   const board = page.findOne(node => node.type === 'FRAME' && node.name === 'Components / MVP board');
   if (!board) return;
-  board.resize(1440, 3800);
+  board.resize(1720, 3800);
   const place = (name, x, y) => {
     const node = page.findOne(
       item => (item.type === 'COMPONENT' || item.type === 'COMPONENT_SET') && item.name === name,
@@ -1309,6 +1506,7 @@ function arrangeComponentArea(page) {
   };
   place('Sidebar / Workspace / Signed in', 220, 3610);
   place('Sidebar / Workspace / Signed out', 800, 3610);
+  place('Sidebar / Workspace / Account menu open', 1380, 3610);
   place('Composer / Empty', 220, 4600);
   place('Composer / Typing', 220, 4780);
   place('Composer / Waiting', 220, 4960);
@@ -1318,7 +1516,7 @@ function arrangeComponentArea(page) {
   place('Auth / Text Field / Error', 220, 5320);
   place('Button / Primary', 624, 5320);
   place('Auth modal / Sign in', 220, 5500);
-  place('Auth modal / Create account', 220, 6100);
+  place('Auth modal / Create account', 220, 6320);
 }
 
 async function createTokenBoard(page, tokens, styles, darkTokens, audit) {
@@ -1559,6 +1757,7 @@ async function updateLegacyBrandIcon() {
 }
 
 async function run() {
+  reportProgress('Locating MVP page');
   const mvpPage = figma.root.children.find(node => node.name === MVP_PAGE_NAME);
   if (!mvpPage) throw new Error('The MVP · Travel Chat page does not exist.');
   await figma.setCurrentPageAsync(mvpPage);
@@ -1569,35 +1768,54 @@ async function run() {
     );
   }
   markOwned(mvpPage);
+  reportProgress('Restoring state frames');
   await restoreStateFramesIfNeeded(mvpPage);
+  reportProgress('Loading fonts');
   await loadFonts([
     { family: 'Inter', style: 'Regular' },
     { family: 'Inter', style: 'Medium' },
     { family: 'Inter', style: 'Semi Bold' },
     { family: 'Inter', style: 'Bold' },
   ]);
+  reportProgress('Refreshing design tokens');
   const tokens = await ensureDesignTokens();
   const darkTokens = await ensureDarkTokens();
   const styles = await getTextStyles();
 
+  reportProgress('Repairing MVP text and layout');
   removeCustomLabels(mvpPage);
   const componentBoard = mvpPage.findOne(node => node.type === 'FRAME' && node.name === 'Components / MVP board');
-  if (componentBoard) componentBoard.resize(1440, 3800);
+  if (componentBoard) componentBoard.resize(1720, 3800);
   const textCount = await loadAndFixText(mvpPage);
-  const headerCount = fixStateHeaders(mvpPage);
+  const headerCount = await fixStateHeaders(mvpPage, tokens, styles);
   const conversationCount = fixConversations(mvpPage);
   const loadingCount = await replaceLoadingComponent(mvpPage, tokens, styles);
+  reportProgress('Rebuilding sidebar components');
   const sidebarResult = await replaceSidebars(mvpPage, tokens, styles);
+  reportProgress('Building account menu state');
+  const accountMenuState = await rebuildAccountMenuState(
+    mvpPage,
+    sidebarResult.accountMenuOpen,
+  );
+  reportProgress('Rebuilding auth dialogs');
   const authResult = await rebuildAuthModals(mvpPage, tokens, styles);
+  reportProgress('Creating theme variants');
   const themeSets = await createThemeVariantSets(mvpPage, darkTokens);
+  reportProgress('Binding icon colors');
   bindAllIconColors(mvpPage, tokens, darkTokens);
   const tokenAudit = auditThemeTokens(mvpPage, themeSets);
+  reportProgress('Arranging components');
   arrangeComponentArea(mvpPage);
+  reportProgress('Rebuilding collapsed sidebar');
   const collapsed = await rebuildCollapsedState(mvpPage, tokens, styles);
+  reportProgress('Refreshing token board');
   const tokenBoard = await createTokenBoard(mvpPage, tokens, styles, darkTokens, tokenAudit);
+  reportProgress('Creating whole-screen theme variants');
   const screenThemes = await createWholeScreenThemeVariants(mvpPage, darkTokens, tokens, styles);
+  reportProgress('Updating legacy brand toggle');
   const brandResult = await updateLegacyBrandIcon();
 
+  reportProgress('Finalizing Figma selection');
   await figma.setCurrentPageAsync(mvpPage);
   figma.currentPage.selection = screenThemes.flowInstances.length ? [screenThemes.flowInstances[0]] : [];
   if (screenThemes.flowInstances.length) {
@@ -1610,6 +1828,7 @@ async function run() {
     conversationCount,
     loadingCount,
     sidebarCount: sidebarResult.targetCount,
+    accountMenuStateId: accountMenuState.id,
     authOverlayCount: authResult.overlayCount,
     collapsedStateId: collapsed.id,
     darkTokenCount: Object.keys(darkTokens).length,
