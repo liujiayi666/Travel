@@ -20,6 +20,8 @@ services:
       - "8000:8000"
     environment:
       DATABASE_URL: postgresql+psycopg_async://travel:travel@db:5432/travel
+      APP_ENV: development
+      FRONTEND_ORIGIN: http://localhost:5173
     depends_on:
       db:
         condition: service_healthy
