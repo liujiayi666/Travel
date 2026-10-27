@@ -75,7 +75,7 @@
       <p>Applies the visual fixes that were blocked by the Figma MCP monthly limit.</p>
       <div class="card">
         <strong>Changes</strong><br />
-        Restyle workspace navigation · compact inputs · validation states · whole-screen Light/Dark variants · token-bound icons and binding audit
+        Restyle workspace navigation · fixed-height auth dialog · compact inputs · validation states · signed-in account popover · Sign out action · whole-screen Light/Dark variants · token-bound icons and binding audit
         <br /><br />
         Requires the existing Travel Web GPT token collections and text styles.
       </div>
@@ -95,6 +95,11 @@
       window.onmessage = event => {
         const message = event.data.pluginMessage;
         if (!message) return;
+        if (message.type === "progress") {
+          status.className = "status";
+          status.textContent = `Working: ${message.step}…`;
+          return;
+        }
         if (message.type === "done") {
           button.textContent = "Finished";
           status.textContent = "Travel Chat states are now whole-screen instances with Theme=Light / Theme=Dark.";

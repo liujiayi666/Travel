@@ -8,7 +8,7 @@ This is a repair plugin for the existing **Travel Web GPT** file, not a fresh-fi
 
 - A `MVP · Travel Chat` page marked as plugin-owned, or the legacy page containing the known `01 / New chat — blank` state.
 - `Travel / Primitives`, `Travel / Color`, `Travel / Spacing`, and `Travel / Radius` variable collections.
-- The `Travel / Display`, `Heading`, `Title`, `Body`, `Body Small`, `Label`, and `Caption` text styles.
+- The `Travel / Display`, `Heading`, `Title`, `Body`, `Body Small`, `Label`, and `Caption` text styles. The plugin creates `Travel / Brand` and `Travel / UI` when upgrading an existing file.
 
 Missing prerequisites fail with a descriptive error instead of creating a partial design.
 
@@ -20,7 +20,9 @@ Missing prerequisites fail with a descriptive error instead of creating a partia
 4. Run **roamwise MVP Finish**.
 5. Click **Apply finish fix**.
 
-The plugin is limited to editing this file and has no network access. It updates the MVP states, workspace sidebar, compact loading, four auth-field states, validation copy, spacious sign-in/sign-up modals, light and dark token boards, dark-mode screen, collapsed-sidebar state, and the legacy brand toggle icon.
+The plugin is limited to editing this file and has no network access. It updates the MVP states, workspace sidebar, compact loading, four auth-field states, validation copy, fixed-height sign-in/sign-up dialogs with a compact account-switch link, a signed-in account popover with a `Sign out` action, light and dark token boards, dark-mode screen, collapsed-sidebar state, and the legacy brand toggle icon.
+
+The account popover is represented by two paired design states: the normal signed-in sidebar and the component-owned `09 / Account menu — open` screen. Both are included in the whole-screen Theme variants, and the component board exposes `Sidebar / Workspace / Account menu open` as a reusable master.
 
 Every reusable component is combined into a `Theme=Light` / `Theme=Dark` variant set. Select a component instance and use the `Theme` property in the right sidebar to switch modes. The token board includes a lightweight binding audit.
 

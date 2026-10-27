@@ -1,41 +1,16 @@
-import { useState, useEffect } from 'react'
-
-type Health = { status: string; database: string; time: number }
-type LoadState =
-  | { phase: 'loading' }
-  | { phase: 'ok'; data: Health }
-  | { phase: 'error'; message: string }
+import { RouterProvider } from "react-router";
+import { AuthProvider } from "@features/auth/AuthProvider";
+import { ModalOutlet } from "@app/modal/ModalOutlet";
+import { router } from "@app/router";
+import { ModalProvider } from "@shared/components/Modal/ModalProvider";
 
 export default function App() {
-
-  const [state, setState] = useState<LoadState>({
-    phase: 'loading'
-  })
-
-  useEffect(() => { 
-    //TODO: fetch health status from backend
-    fetch('/api/healthz')
-      .then(response => { 
-        if (!response.ok) {
-          throw new Error(`HTTP error! status: ${response.status}`)
-        }
-        return response.json()
-      })
-      .then(data => {
-        setState({ phase: 'ok', data })
-      })
-      .catch(error => {
-        setState({ phase: 'error', message: error.message })
-      })
-  },[])
-
-
   return (
-    <main style={{ fontFamily: 'sans-serif', padding: 40 }}>
-      <h1>Travel Copilot</h1>
-      {state.phase === 'loading' && <p>Loading…</p>}
-      {state.phase === 'ok' && <p>API: {state.data.status} · DB: {state.data.database}</p>}
-      {state.phase === 'error' && <p style={{ color: 'crimson' }}>{state.message}</p>}
-    </main>
-  )
+    <AuthProvider>
+      <ModalProvider>
+        <RouterProvider router={router} />
+        <ModalOutlet />
+      </ModalProvider>
+    </AuthProvider>
+  );
 }

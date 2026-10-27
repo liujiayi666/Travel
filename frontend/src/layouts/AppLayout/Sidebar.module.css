@@ -1,0 +1,124 @@
+.sidebar {
+  display: flex;
+  height: 100svh;
+  padding: 20px 14px;
+  box-sizing: border-box;
+  flex-direction: column;
+  justify-content: space-between;
+  background: #f7f8f7;
+  border-right: 1px solid #dde3e0;
+}
+
+.body {
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0 8px 24px;
+  color: #17201d;
+  font-size: var(--font-size-brand);
+  font-weight: var(--font-weight-semibold);
+  line-height: var(--line-height-brand);
+}
+
+.brandMark {
+  display: grid;
+  width: 34px;
+  height: 34px;
+  color: #ffffff;
+  font-size: 20px;
+  background: #26324a;
+  border-radius: 10px;
+  place-items: center;
+}
+
+.sectionLabel {
+  padding: 14px 10px 8px;
+  margin: 0;
+  color: #8b9591;
+  font-size: var(--font-size-caption);
+  font-weight: var(--font-weight-semibold);
+  line-height: var(--line-height-caption);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.navList {
+  display: grid;
+  gap: 3px;
+}
+
+.navItem,
+.activeNav,
+.chatItem,
+.activeChat {
+  display: flex;
+  width: 100%;
+  min-height: 34px;
+  padding: 0 10px;
+  align-items: center;
+  color: #65718a;
+  font-size: var(--font-size-ui);
+  font-weight: var(--font-weight-regular);
+  line-height: var(--line-height-ui);
+  text-align: left;
+  text-decoration: none;
+  cursor: pointer;
+  background: transparent;
+  border: 0;
+  border-radius: 7px;
+}
+
+.navItem span,
+.activeNav span {
+  width: 22px;
+  color: #8b9591;
+  font-size: 18px;
+}
+
+.navItem:hover,
+.chatItem:hover,
+.activeChat:hover {
+  background: #f1f3f2;
+}
+
+.activeNav,
+.activeChat {
+  color: #26324a;
+  background: #edf1f7;
+}
+
+.activeNav i {
+  width: 6px;
+  height: 6px;
+  margin-left: auto;
+  background: #1aa58e;
+  border-radius: 999px;
+}
+
+.navItem:focus-visible,
+.activeNav:focus-visible,
+.chatItem:focus-visible,
+.activeChat:focus-visible {
+  outline: 2px solid #138d7b;
+  outline-offset: 2px;
+}
+
+.recent {
+  margin-top: 20px;
+}
+
+.chatItem,
+.activeChat {
+  color: #69736f;
+}
+
+.accountArea {
+  flex: 0 0 auto;
+  padding-top: 12px;
+  border-top: 1px solid #e5e9e6;
+}

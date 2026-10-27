@@ -35,5 +35,12 @@ async def get_current_user(
 
 def require_trusted_origin(request: Request) -> None:
     origin = request.headers.get("origin")
-    if origin != settings.frontend_origin:
+    api_origin = f"{request.url.scheme}://{request.url.netloc}"
+
+    trusted_origins = {
+        settings.frontend_origin,
+        api_origin,
+    }
+
+    if origin not in trusted_origins:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN)
