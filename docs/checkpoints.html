@@ -29,6 +29,9 @@
   }
   time { color: var(--muted); font-size: 12.5px; }
   .cp h2 { font-size: 16px; margin: 0; }
+  .cp h2 a { color: var(--accent); text-decoration: none; }
+  .cp h2 a:hover { text-decoration: underline; }
+  .cp-meta { margin: -2px 0 8px; color: var(--muted); font-size: 12.5px; }
   .cp ul { margin: 6px 0 10px; padding-left: 20px; }
   .cp li { margin: 3px 0; }
   .cp code { background: var(--code); padding: 1px 5px; border-radius: 4px; font-size: 13px; }
@@ -130,6 +133,20 @@
         <li>注册、登录、退出和当前用户均由真实 PostgreSQL 集成测试验证，使用独立测试库、随机数据和清理</li>
       </ul>
       <blockquote>认证 Service 的核心不是 CRUD 调用，而是明确 Session 作为服务端凭证的生命周期：创建与 User 同事务，校验时同时检查摘要和过期，撤销时直接可靠地删除。</blockquote>
+    </article>
+    <article class="cp">
+      <header>
+        <h2><a href="https://github.com/liujiayi666/Travel/pull/8">PR #8 · feat(auth): add cookie session routes</a></h2>
+      </header>
+      <p class="cp-meta">A4 认证 Route、Cookie 与 CSRF · 2026-10-27 · commit 8b5611b</p>
+      <ul>
+        <li>用 <code>APIRouter(prefix=...)</code> 将认证 HTTP 契约按领域集中管理，Route 只负责请求解析、调用 Service、设置响应和映射 HTTP 语义</li>
+        <li>Dependency 会形成请求级依赖链：optional token 提取可选凭证，required token 拒绝缺失凭证，current user 再组合数据库 Session 校验；同一个缺失 Cookie 在 <code>/me</code> 与 <code>/logout</code> 上具有不同语义</li>
+        <li>FastAPI 的 Route 装饰器描述路由与响应契约；请求命中后先解析参数并执行 dependency，再调用 Route 函数，最后把函数返回的 body 与注入的 Response headers 合并发送</li>
+        <li>注入的 <code>Response</code> 是发送前可修改的响应对象，不代表响应已经返回；Service 成功后再写 <code>Set-Cookie</code>，原始 token 只进入 HttpOnly Cookie，不进入 JSON</li>
+        <li>Cookie 的 <code>HttpOnly</code>、<code>SameSite</code>、<code>Secure</code>、<code>Path</code> 与 Origin 精确校验共同形成浏览器侧安全边界；服务端删除 AuthSession 才真正撤销凭证</li>
+      </ul>
+      <blockquote>用 Router 表达领域 API、用 dependency 组合身份恢复流程、再让 HTTP 层统一处理 Cookie 与 CSRF，可以把认证安全边界从业务 Service 中清晰分离出来。</blockquote>
     </article>
   </div>
 </div>
