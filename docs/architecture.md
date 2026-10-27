@@ -1,14 +1,15 @@
 # Travel Copilot MVP 架构与学习计划
 
-> 版本：0.1  
-> 目标：通过一个可实际运行的 AI 旅行助手，系统训练现代前端、基础后端、实时通信、文件上传、AI Agent、测试与性能优化能力。
+> 版本：0.2
+>
+> 目标：通过一个可实际运行的 AI 旅行助手转向 AI Agent 工程。优先建立可验证的 Agent 核心能力，再扩展实时通信、文件上传和协作功能。
 
 ## 1. 项目定位
 
 这个项目首先是一个学习型 MVP，其次才是完整旅游产品。设计时遵循以下原则：
 
 1. 使用真实业务场景承载技术，不为了展示技术强行增加功能。
-2. 从一个可工作的纵向切片开始，再逐步加入 SSE、文件上传、Agent 和 WebSocket。
+2. 先完成最小纵向切片，再建立 Agent core 与 eval，之后加入 SSE、文件上传和 WebSocket。
 3. 第一版采用模块化单体，不拆微服务。
 4. 所有性能优化都要有指标、测量结果和明确瓶颈，不追求抽象的“性能最佳”。
 5. AI Provider、文件存储等外部系统通过稳定的内部接口隔离，避免业务代码与供应商 API 紧耦合。
@@ -66,7 +67,7 @@
 - SQLAlchemy 2：数据访问
 - Alembic：数据库迁移
 - PostgreSQL：业务数据
-- Anthropic Python SDK：LLM 调用
+- OpenAI-compatible Python SDK：LLM 调用；DeepSeek 默认，GLM 可切换（base_url + model 从环境变量读取）
 - pytest：后端测试
 
 ### 3.3 本地基础设施
@@ -86,7 +87,7 @@ flowchart LR
     DB[(PostgreSQL)]
     Storage[MinIO / S3]
     Agent[Agent Orchestrator]
-    Claude[Anthropic API]
+    LLM[DeepSeek / GLM API]
     Tools[Weather / Places / Itinerary Tools]
 
     Browser -->|REST| API
@@ -96,7 +97,7 @@ flowchart LR
     API --> DB
     API --> Storage
     API --> Agent
-    Agent --> Claude
+    Agent --> LLM
     Agent --> Tools
 ```
 
@@ -130,7 +131,7 @@ src/
     lib/                SSE parser、格式化、错误处理
 ```
 
-不要让组件直接调用 Anthropic、拼接数据库结构或解析供应商原始事件。组件只消费应用自己的 API 和领域事件。
+不要让组件直接调用 LLM Provider、拼接数据库结构或解析供应商原始事件。组件只消费应用自己的 API 和领域事件。
 
 ## 6. 后端模块划分
 
@@ -146,7 +147,7 @@ app/
   collaboration/        WebSocket 房间
   agent/
     orchestrator.py     Agent 循环
-    providers/          Anthropic 适配层
+    providers/          DeepSeek / GLM 适配层
     tools/              Weather、Places、Save Itinerary
     events.py           内部流式事件协议
 ```
@@ -196,7 +197,7 @@ data: {"runId":"run_123","messageId":"msg_456","delta":"东京"}
 - 将 delta 放入 buffer，每个动画帧或每 30–50ms 合并提交。
 - 使用稳定的 `messageId` 更新单条消息。
 - 区分 transport error、Agent error 和 tool error。
-- 页面卸载或用户取消时，后端也要取消 Anthropic 请求。
+- 页面卸载或用户取消时，后端也要取消上游 LLM 请求。
 
 ### 7.2 WebSocket 的真实用途
 
@@ -210,17 +211,17 @@ data: {"runId":"run_123","messageId":"msg_456","delta":"东京"}
 
 ## 8. AI Agent 设计
 
-简单 LLM 调用是：用户输入 → Claude 文本输出。
+简单 LLM 调用是：用户输入 → LLM 文本输出。
 
 Agent 循环是：
 
 ```text
 用户输入
-→ Claude 决定是否调用工具
+→ LLM 决定是否调用工具
 → 后端验证工具名和参数
 → 执行工具
-→ 将工具结果返回 Claude
-→ Claude 决定继续调用或生成最终回答
+→ 将工具结果返回 LLM
+→ LLM 决定继续调用或生成最终回答
 ```
 
 第一版只提供三个工具：
@@ -240,7 +241,7 @@ save_itinerary_item(trip_id, item)
 - 结构化日志。
 - 修改数据前的用户确认。
 
-Agent 运行必须限制最大步骤数、总时长、token 和成本。Anthropic API Key 只存后端环境变量，不能进入浏览器或日志。
+Agent 运行必须限制最大步骤数、总时长、token 和成本。LLM API Key 只存后端环境变量，不能进入浏览器或日志。
 
 供应商隔离建议：
 
@@ -249,7 +250,7 @@ class LlmProvider(Protocol):
     async def stream(self, request: LlmRequest) -> AsyncIterator[AgentEvent]: ...
 ```
 
-业务层消费 `AgentEvent`，而不是直接依赖 Anthropic 原始 event 类型。
+业务层消费 `AgentEvent`，而不是直接依赖任一供应商的原始 event 类型。DeepSeek 与 GLM 的差异收敛在 Provider 适配层。
 
 ## 9. 核心数据模型
 
@@ -401,10 +402,17 @@ MinIO 只负责保存文件，不负责病毒扫描、PDF 解析或文字识别�
 ### 后端
 
 - pytest 测试权限、Schema、Service 和 API。
-- Anthropic 及外部工具全部使用 fake/mock。
+- LLM Provider 及外部工具全部使用 fake/mock，并覆盖切换 Provider、超时和错误事件。
 - 验证断开连接会取消生成。
 - 验证错误不会留下永久 `running` 状态。
 - 测试文件大小、MIME 和越权访问。
+
+### Agent eval
+
+- 从首次 Agent loop 开始维护可重复运行的固定场景，不等到项目末期再补“示例问题”。
+- 最小场景集覆盖正常工具调用、参数缺失或非法、工具超时/失败、跨用户越权、Prompt Injection、达到最大步骤，以及前端取消。
+- 每个场景记录输入、预期终止状态、工具轨迹、耗时、token 和成本；mock 模型用于稳定回归，少量真实 Provider smoke test 用于发现适配漂移。
+- eval 用于证明可靠性和控制边界，不把模型措辞完全一致当作通过条件。
 
 ### 契约
 
@@ -448,37 +456,39 @@ outputTokens
 
 完成标准：浏览器调用 FastAPI 并显示健康状态。
 
-### Phase 1：第一个纵向切片
+### Phase 1：身份与权限基础
 
-- 创建 Trip。
-- 输入一条消息。
-- 后端调用 Claude，先返回非流式答案。
+- 注册、登录、退出和 Session Cookie（已在 A 系列提前实施）。
+- 建立后续 Trip、会话和 Agent 工具所需的身份边界。
+- 定义成员权限检查原则。
+
+完成标准：浏览器能恢复登录，未登录请求被拒，权限检查不依赖前端。
+
+### Phase 2：最小旅行纵向切片
+
+- 创建和读取 Trip。
+- 输入一条消息并调用 LLM，先返回非流式答案。
 - 保存 Message。
 
-完成标准：从 UI 到数据库和 LLM 的完整链路可用。
+完成标准：从 UI 到数据库、Provider 和 LLM 的完整链路可用。
 
-### Phase 2：SSE
+### Phase 3：Agent 核心与 eval
+
+- Provider 接口与 DeepSeek 默认、GLM 可切换适配。
+- 一个只读工具，覆盖 Schema 校验、权限、超时和稳定错误。
+- Agent loop 状态机、最大步骤/时长/token、取消和终止状态。
+- AgentRun / ToolCall trace、成本和延迟记录。
+- 固定 eval 场景：正常、工具失败、越权/注入、达到上限。
+
+完成标准：Agent 能完成一次受控工具调用，失败和超限不会永久挂起，且回归场景可重复运行。
+
+### Phase 4：SSE
 
 - 自定义事件协议。
 - 流式文本、工具状态、取消和错误。
 - 前端 buffer 更新和重渲染分析。
 
-完成标准：慢流、取消、断网和错误都有明确 UI 状态。
-
-### Phase 3：鉴权与权限
-
-- 注册、登录、退出和 Session Cookie。
-- Trip Member 权限。
-- CSRF 和 rate limit。
-
-完成标准：用户不能访问其他人的 Trip、附件或 WebSocket 房间。
-
-### Phase 4：Agent 工具
-
-- Places、Weather 和 Save Itinerary。
-- 参数验证、执行轨迹、最大步骤和确认机制。
-
-完成标准：AI 可以通过工具生成并保存结构化行程。
+完成标准：慢流、取消、断网和错误都有明确 UI 状态，且不破坏 Agent 已有的终止语义。
 
 ### Phase 5：文件上传
 
@@ -512,25 +522,26 @@ outputTokens
 | 性能 | token 批处理、虚拟化、Profiler 数据 |
 | 安全 | Cookie Session、CSRF、权限和上传校验 |
 | 后端基础 | FastAPI、Schema、数据库事务和迁移 |
-| AI 工程 | Streaming、tool use、成本和安全边界 |
+| AI Agent 工程 | Provider 隔离、tool contract、受控 loop、trace、eval、成本和安全边界 |
+| 可靠性与评估 | 最大步骤/超时、终止状态、失败回归场景和可复查指标 |
 | 文件系统 | Presigned URL、MinIO/S3、异步解析 |
 | 测试 | MSW、Playwright、pytest、契约测试 |
 | 架构判断 | 为什么 SSE 不用 WebSocket，为什么先单体 |
 
 ## 18. 面试叙述模板
 
-> 我实现了一个 React + FastAPI 的 AI 旅行助手。REST 负责业务数据，SSE 负责 AI 单向流式输出，WebSocket 负责同行者实时协作，Presigned URL 负责文件直传。后端使用 opaque Session Cookie 鉴权，并将 Anthropic 原始事件转换成稳定的领域事件协议。前端对 token 更新进行批处理，支持取消、错误恢复和长列表虚拟化。Agent 的工具调用具有参数验证、权限检查、超时、最大步骤和执行轨迹。整个系统从模块化单体开始，通过指标决定后续性能优化和基础设施演进。
+> 我实现了一个 React + FastAPI 的 AI 旅行助手。REST 负责业务数据，SSE 负责 AI 单向流式输出，WebSocket 负责同行者实时协作，Presigned URL 负责文件直传。后端使用 opaque Session Cookie 鉴权，并通过 Provider 接口隔离 DeepSeek/GLM 和供应商原始事件。Agent 循环具备工具 Schema 校验、服务端权限检查、超时、最大步骤、终止状态、执行轨迹和固定 eval 场景。整个系统从模块化单体开始，通过指标和失败回归决定后续优化。
 
 ## 19. 开始实现前的决策清单
 
-- [ ] 确认第一版只做单用户 Trip，不先做协作。
-- [ ] 确认前端使用 Vite SPA，SSR 放到后期专项。
-- [ ] 确认第一版 Claude 调用先非流式，再升级 SSE。
+- [x] 确认第一版只做单用户 Trip，不先做协作。
+- [x] 确认前端使用 Vite SPA，SSR 放到后期专项。
+- [ ] 确认第一版 LLM 调用先非流式，再升级 SSE；DeepSeek 默认、GLM 可切换。
 - [ ] 确认本地使用 PostgreSQL 和 MinIO。
-- [ ] 确认认证使用 Cookie Session。
+- [x] 确认认证使用 Cookie Session。
 - [ ] 定义首批 API Schema 和错误格式。
 - [ ] 定义 SSE 事件联合类型。
 - [ ] 定义 User、Trip、Message、Run、Attachment 表。
-- [ ] 为每个 Phase 写清可运行的验收场景。
+- [x] 为每个 Phase 写清可运行的验收场景。
 
-完成这些决策后，再创建项目骨架。第一项编码任务应是最小纵向切片，而不是一次性搭建全部基础设施。
+这些决策随阶段推进持续确认；不要为了补齐清单回退重做已完成的基础设施。

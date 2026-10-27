@@ -1,13 +1,20 @@
 ---
 name: accept
-description: 验收当前 step：用户跑验收命令，Codex 看输出并 review 代码，通过后更新 PROGRESS.md（✓ + 学到点 + 易错本）并给面试向小结。说"验收/做完了/检查一下"时使用。
+description: 验收当前 step 的功能、安全与 Agent 工程质量，要求 teach-back，通过后更新 PROGRESS.md 和 checkpoint。说“验收”“做完了”“检查一下”时使用。
 ---
 
 # accept — 验收与进度更新
 
-1. **读标准**：读 PROGRESS.md 当前 step 的验收标准。
-2. **跑验收**：命令由用户执行（pytest / ruff / lint / 浏览器验证），Codex 看输出判定。
-3. **review 代码**：Read 本次改动，查正确性 + 架构约定（组件不直连 LLM、secrets 不进前端、TS strict 等）；给 1–3 条改进建议，不阻塞通过。
-4. **更新进度**：通过 → Codex 更新 PROGRESS.md：step 打 ✓、写"学到"要点、把 review 中用户的典型错误记入"易错本"、下一步设为进行中；不通过 → 列差距，回 /tutor 流程。git commit 由用户执行。
-5. **生成 checkpoint**：先问用户"这步你觉得学到了什么"，再结合本次 diff 在 docs/checkpoints.html 追加条目（commit hash、日期、标题、3–5 个知识点、一句面试向总结）。
-6. **小结**：3–5 条本步学习小结，面试叙述向（能讲出为什么，不是 API 清单）。
+1. **读验收契约**：读当前 step 的目标、验收、目标能力、相关架构决策和本次 diff。缺少可运行验收时先补契约，不能凭“看起来没问题”通过。
+2. **跑验收**：默认由用户执行 pytest / ruff / lint / 浏览器验证，Codex 根据真实输出判定；用户明确委托的机械命令可由 Codex 执行。
+3. **功能与安全 review**：检查行为契约、错误语义、权限边界、密钥边界和架构约定。测试通过不代表验收通过。
+4. **Agent 专用门槛**：涉及 LLM 或 Agent 时，逐项检查适用的证据：
+   - Provider 边界可替换，失败可映射成稳定内部错误。
+   - 工具名与参数经过 Schema 验证，权限检查在服务端。
+   - 最大步骤、时长和 token 有上限，成功、失败、取消和超限都能终止。
+   - 能查看 run/tool trace、耗时和 token；不记录密码、原始 token 或 API Key。
+   - 至少有正常、工具失败、越权或注入、达到上限等固定 eval 场景。
+5. **teach-back**：先问用户“这步你觉得学到了什么”“如果这个 Agent run 失败，你会怎样定位”；用户必须能解释状态流和关键取舍，再把缺口写回 review。
+6. **给出验收结论**：不通过时列差距并回 /tutor。功能上已通过但实现尚未提交时，先要求用户提交；拿到实现 commit hash 前不要把 step 标为 ✓，也不要伪造 hash。
+7. **更新进度与 checkpoint**：Codex 更新 PROGRESS.md：打 ✓、写“学到”、记录可复查证据（代码路径、测试名、trace/指标或失败场景），把典型错误写入易错本，并设置下一步；随后结合实现 commit hash 更新 docs/checkpoints.html，记录日期、标题、能力、3–5 个知识点、可复查证据和一句面试向总结。实现与验收文档使用不同提交。
+8. **小结**：3–5 条面试叙述向总结，必须说明问题和取舍，不能只列 API。
