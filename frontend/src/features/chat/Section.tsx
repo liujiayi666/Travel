@@ -1,21 +1,28 @@
 import type { AuthState } from "@features/auth/type";
-import { Composer } from "./Composer";
+import {
+  Composer,
+  type ComposerActions,
+  type ComposerState,
+} from "./Composer";
 import { Conversation } from "./Conversation";
 import styles from "./Chat.module.css";
 
 interface SectionProps {
   auth: AuthState;
+  composer: {
+    state: ComposerState;
+    actions: ComposerActions;
+  };
   primaryActionLabel: string;
   onPrimaryAction: () => void;
 }
 
 export const Section = ({
   auth,
+  composer,
   primaryActionLabel,
   onPrimaryAction,
 }: SectionProps) => {
-  const isAuthenticated = auth.status === "authenticated";
-
   return (
     <section className={styles.section}>
       <header className={styles.header}>
@@ -33,7 +40,7 @@ export const Section = ({
       </header>
 
       <Conversation auth={auth} />
-      <Composer isAuthenticated={isAuthenticated} />
+      <Composer state={composer.state} actions={composer.actions} />
     </section>
   );
 };

@@ -1,5 +1,6 @@
 import type { ReactNode } from "react";
 import { Link } from "react-router";
+import type { ChatSummary } from "@features/chat/chats";
 import {
   AccountMenu,
   type AccountMenuItem,
@@ -13,11 +14,7 @@ export interface NavigationItem {
   href: string;
 }
 
-export interface RecentChat {
-  id: string;
-  label: string;
-  href: string;
-}
+export type RecentChat = ChatSummary;
 
 export interface Account {
   name: string;

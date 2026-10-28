@@ -30,6 +30,7 @@
 | 2 | 2026-10-16 | P0-6 backend 容器化（插入步）+ 部署路线图（docs/deploy.md） |
 | 3 | 2026-10-23 | 路线调整：认证优先；完成 User / AuthSession 模型和首份 Alembic 迁移 |
 | 4 | 2026-10-27 | 完成 Cookie Session Route、统一错误映射与 Origin 校验 |
+| 5 | 2026-10-28 | 完成公共 App Shell、Chat 动作级认证弹框与按会话隔离的草稿状态 |
 
 ## 易错本
 
@@ -64,6 +65,10 @@
 - 同一缺失 Cookie 对不同接口语义不同：`/me` 必须 401，`/logout` 已处于目标状态，应保持幂等并返回 204
 - 404 表示路由没有匹配；先确认实际运行的进程/容器和目标模块，再排查认证中间件或 dependency
 - 测试环境保护不仅要设置隔离库，还要在收集用例前校验实际数据库名；统一命令入口与分 stage 编排是后续课题
+- 草稿放在 Composer 局部 `useState` 会随 Chat 切换复用或组件卸载而丢失；跨 Chat 草稿应按 `chatId` 提升到稳定 Provider
+- 401 表示凭证无效或过期，应映射为 `anonymous`；500、网络失败和响应解析失败表示认证状态无法确认，应进入 `error`，不能伪装成未登录
+- 前端登录弹框只负责用户体验，不是权限边界；即使绕过 UI，后端仍必须独立拒绝未认证请求和越权资源访问
+- URL 参数属于不可信外部输入，不能直接作为普通对象属性读取：`toString`、`__proto__` 会命中原型链。键值存储使用 `Map`，并限制外部 ID 到已知合法集合
 
 ## Phase 0 — 项目骨架（重写参考骨架）
 
@@ -157,28 +162,45 @@
 - 学到：清除 Cookie 只处理浏览器副本，服务端删除 AuthSession 才完成当前设备的凭证撤销；重复退出返回 204 是为了客户端可安全重试
 - 面试向：基于 opaque Session 的认证把“浏览器持有原始 token”和“数据库保存摘要”分开，再通过请求级 dependency、统一错误映射与 Origin 校验，把身份恢复、撤销和 CSRF 防护收敛到清晰的安全边界
 
-### A5 前端登录页与 App Shell — 下一步
+### A5 公共 App Shell、认证弹框与按会话草稿 — ✓ 2026-10-28（commit 88a72ba, 94d450e）
 
-- 目标：引入 React Router，建立最小登录页与受保护的 App Shell，消费现有 register / login / logout / me API；本步不追求视觉打磨
-- 验收：刷新恢复登录、未登录重定向、退出后回到登录页；前端不读取 HttpOnly Cookie 或持久化 token；认证未知态与网络错误可区分
-- 能力连接：建立后续 Trip、会话和 Agent 工具调用所需的用户身份边界
-- 状态：待开始；进入后由 /tutor 给出 TODO 骨架
+- 目标：匿名和登录用户都进入同一 App Shell；启动时通过 `/api/auth/me` 恢复身份；匿名用户提交 Chat 时打开认证弹框，不引入 `/login` 重定向；不同 Chat 保留各自草稿
+- 验收通过：用户确认 `npm test`、`npm run lint`、`npm run build` 无问题；浏览器验证 Kyoto / Islands 草稿互不串、匿名提交弹框、登录后草稿保留、退出后清空
+- 可复查测试：`ChatDraftProvider > keeps separate drafts while switching between chats`、`ChatDraftProvider > preserves anonymous drafts across login and clears them on logout`、`ChatDraftProvider > treats toString / __proto__ as a regular draft key`、`resolveChatId > rejects unsafe URL key toString / __proto__`、`Composer > edits and submits the draft`、`Composer > blocks submission while the session is unknown`
+- 关键边界：`checking` 只等待身份恢复；`anonymous` 才打开登录框；`error` 表示认证状态未知并禁止发送；前端不读取 Cookie，也未使用 `localStorage` / `sessionStorage` 保存 token；`chat` URL 参数先经过合法 ID 解析
+- 关键代码：`frontend/src/features/chat/ChatDraftProvider.tsx`、`ChatDraftContext.ts`、`routes/ChatPage.tsx`、`features/chat/Composer.tsx`
+- 分工：用户完成 Composer 状态与 `state/actions` 合约的初版判断；Codex 补全草稿 Provider、路由接线、显式状态和测试，并逐文件讲解
+- 学到：跨页面或跨资源的客户端状态要放在稳定 Provider 中，并按稳定资源 ID 建索引；Composer 只消费 `state + actions`，认证和发送决策留在页面容器
+- 学到：受控输入每次有效输入都会同步本地 React 状态并触发消费者重渲染，但不会请求后端；submit 读取的是最新渲染状态。若改为非受控输入，则必须额外设计切换、失焦和卸载时的草稿保存
+- 学到：匿名登录后保留草稿、退出或切换账号时清空草稿，是体验与隐私的组合契约；状态所有者变化不能简单依赖组件重新挂载，否则登录本身也可能清掉用户刚输入的草稿
+- 学到：动态键的查找表应使用 `Map` 或 null-prototype object；外部 URL 参数还要先经过 allowlist / schema 边界，不能把“是字符串”误当成“是合法资源 ID”
+- 面试向：公共 App Shell 配合动作级认证拦截，可以在不牺牲匿名浏览的前提下建立登录入口；草稿由按 `chatId` 索引的 Provider 管理，认证状态与纯 UI Composer 解耦，并通过浏览器行为测试和状态迁移测试验证
+
+### A6 Trip 最小创建与读取 — 下一步
+
+- 训练能力：服务端资源归属与成员权限。Agent 工具未来可以接收用户提供的 `trip_id`，所以必须在写入数据库前独立验证当前用户是否有权访问该 Trip，不能相信前端或模型参数
+- 目标：建立最小 `Trip` 与 owner `TripMember` 数据模型、Alembic 迁移、请求级 Schema、Service 与认证 API；实现创建 Trip、列出当前用户可访问 Trip、读取单个 Trip
+- 接口契约：`POST /api/trips`、`GET /api/trips`、`GET /api/trips/{tripId}`；创建时 Trip 与 owner membership 在同一事务提交
+- 最小字段：Trip 标题、目的地、开始日期、结束日期；预算与人数等字段在第一条 Trip 纵向切片跑通后再补，避免把通用 CRUD 一次做满
+- 验收：未认证请求返回 401；创建者可在列表中读回并刷新后仍存在；非成员读取同一 ID 返回 404，避免通过状态码泄露资源是否存在；数据库确认 owner membership 与 Trip 同事务持久化
+- 证据要求：真实 PostgreSQL 集成测试覆盖创建、列表隔离、非成员访问和回滚；迁移 `upgrade` / `downgrade` 可执行；前端至少展示创建后的 Trip 并刷新读回
+- 运行与证据：pytest 集成测试名称、Alembic revision、浏览器 Network / 页面结果；本步不接 LLM，也不先引入缓存库
+- 状态：待开始；进入后由 `/tutor` 先出权限与状态边界热身题，再给 TODO 骨架
 
 ## 下一步
 
-进入 A5：React Router 登录页与 App Shell。前端只消费应用自己的 `/api`，不得读取或持久化 HttpOnly Session token。A5 完成后尽快形成 Agent 最小纵向切片。
+进入 A6：Trip 最小创建与读取。关键学习点不是 CRUD，而是用服务端 Trip 成员权限建立未来 Agent 工具调用的资源边界。前端仍只消费应用自己的 `/api`，不得读取或持久化 HttpOnly Session token。
 
 后续顺序：
 
-1. A5：最小登录页与 App Shell
-2. A6：Trip 最小创建与读取
-3. A7：Provider 边界 + 非流式 Chat + Message 持久化
-4. A8：Agent 核心（单工具、循环、限额、trace、eval）
-5. A9：SSE 流式展示、取消与错误恢复
-6. 文件上传、WebSocket 协作、工程化与性能专项
+1. A6：Trip 最小创建与读取
+2. A7：Provider 边界 + 非流式 Chat + Message 持久化
+3. A8：Agent 核心（单工具、循环、限额、trace、eval）
+4. A9：SSE 流式展示、取消与错误恢复
+5. 文件上传、WebSocket 协作、工程化与性能专项
 
 Agent 核心能力不延后到文件上传和协作功能之后。每个 A6–A8 步骤在开始前由 /tutor 补充具体目标、验收和证据要求。
 
 测试环境 TODO（后续学习）：评估 nox/tox 或 Makefile 等统一入口，区分 unit / integration-local / integration-CI / e2e 的依赖与数据库配置；生产数据库永远不参与测试。
 
-准备：注册 platform.deepseek.com 拿 API Key（`sk-` 开头），后续放进 `backend/.env`；现在 A2 还不需要该密钥。
+准备：注册 platform.deepseek.com 拿 API Key（`sk-` 开头），A7 接入 LLM 前放进 `backend/.env`；A6 不需要该密钥。

@@ -187,6 +187,11 @@
   place-items: center;
 }
 
+.composer button:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
 .composerArea > p {
   margin: 10px 0 0;
   color: #8b9591;

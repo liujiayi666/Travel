@@ -11,6 +11,16 @@ const meta = {
   },
   args: {
     auth: { status: "anonymous" },
+    composer: {
+      state: {
+        draft: "",
+        phase: "ready",
+      },
+      actions: {
+        changeDraft: fn(),
+        submit: fn(),
+      },
+    },
     primaryActionLabel: "Sign in",
     onPrimaryAction: fn(),
   },
@@ -41,6 +51,16 @@ export const SessionError: Story = {
     auth: {
       status: "error",
       message: "Unable to restore your session.",
+    },
+    composer: {
+      state: {
+        draft: "",
+        phase: "error",
+      },
+      actions: {
+        changeDraft: fn(),
+        submit: fn(),
+      },
     },
   },
 };

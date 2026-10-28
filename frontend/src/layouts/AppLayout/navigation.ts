@@ -1,4 +1,5 @@
-import type { NavigationItem, RecentChat } from "./Sidebar";
+import type { NavigationItem } from "./Sidebar";
+export { recentChats } from "@features/chat/chats";
 
 export const navigation: readonly NavigationItem[] = [
   {
@@ -24,18 +25,5 @@ export const navigation: readonly NavigationItem[] = [
     icon: "▱",
     label: "Saved guides",
     href: "/?section=saved-guides",
-  },
-];
-
-export const recentChats: readonly RecentChat[] = [
-  {
-    id: "kyoto",
-    label: "Kyoto in five days",
-    href: "/?section=trip-planner&chat=kyoto",
-  },
-  {
-    id: "islands",
-    label: "Bali or Phuket?",
-    href: "/?section=trip-planner&chat=islands",
   },
 ];
