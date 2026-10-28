@@ -1,4 +1,5 @@
 import type { Meta, StoryObj } from "@storybook/react-vite";
+import { fn } from "storybook/test";
 
 import { Composer } from "./Composer";
 
@@ -16,7 +17,14 @@ const meta = {
     ),
   ],
   args: {
-    isAuthenticated: true,
+    state: {
+      draft: "Plan a quiet five-day trip to Kyoto.",
+      phase: "ready",
+    },
+    actions: {
+      changeDraft: fn(),
+      submit: fn(),
+    },
   },
 } satisfies Meta<typeof Composer>;
 
@@ -25,8 +33,20 @@ type Story = StoryObj<typeof meta>;
 
 export const Ready: Story = {};
 
-export const SignedOut: Story = {
+export const CheckingSession: Story = {
   args: {
-    isAuthenticated: false,
+    state: {
+      draft: "",
+      phase: "checking",
+    },
+  },
+};
+
+export const SessionError: Story = {
+  args: {
+    state: {
+      draft: "Plan a quiet five-day trip to Kyoto.",
+      phase: "error",
+    },
   },
 };
