@@ -149,13 +149,14 @@
       <blockquote>用 Router 表达领域 API、用 dependency 组合身份恢复流程、再让 HTTP 层统一处理 Cookie 与 CSRF，可以把认证安全边界从业务 Service 中清晰分离出来。</blockquote>
     </article>
     <article class="cp">
-      <header><span class="id">88a72ba</span><time>2026-10-28</time><h2>A5 公共 App Shell、认证弹框与按会话草稿</h2></header>
+      <header><span class="id">88a72ba · 94d450e</span><time>2026-10-28</time><h2>A5 公共 App Shell、认证弹框与按会话草稿</h2></header>
       <ul>
         <li>匿名用户可以浏览同一个 App Shell；只有明确处于 <code>anonymous</code> 并提交非空 Chat 时才打开认证弹框，不使用 <code>/login</code> 重定向</li>
-        <li>草稿从 Composer 局部状态提升到稳定 Provider，并按 <code>chatId</code> 建立索引；切换 Kyoto / Islands 时不会互相覆盖，Composer 也不直接依赖 Auth 或 Modal</li>
+        <li>草稿从 Composer 局部状态提升到稳定 Provider，并用 <code>Map&lt;string, string&gt;</code> 按 <code>chatId</code> 保存；切换 Kyoto / Islands 时不会互相覆盖，也不会命中 <code>toString</code> / <code>__proto__</code> 等原型属性</li>
         <li>受控输入的每次有效变化都会更新 React 状态并触发消费者渲染，但不会请求后端；提交时消费的是最新状态，而不是首次渲染时的旧值</li>
         <li>401 映射为 <code>anonymous</code>；500、网络失败和响应解析失败映射为 <code>error</code>。只有确认未登录才弹框，认证状态未知不能伪装成未登录</li>
         <li>匿名草稿跨登录保留；退出或切换账号时清空。前端认证拦截只是体验层，受保护 API 与未来 Trip / Agent 工具权限仍必须由服务端独立验证</li>
+        <li>URL 中的 <code>chat</code> 参数先经过已知 ID allowlist，非法值回退到默认会话；存储层和 URL 边界分别测试，避免分享链接触发异常类型或原型链读取</li>
       </ul>
       <blockquote>用公共 Shell 保留匿名浏览，用动作级认证拦截建立登录入口，再把按资源 ID 隔离的草稿提升到稳定 Provider；前端状态流清晰后，服务端权限仍保持独立且不可绕过。</blockquote>
     </article>

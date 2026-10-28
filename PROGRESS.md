@@ -68,6 +68,7 @@
 - 草稿放在 Composer 局部 `useState` 会随 Chat 切换复用或组件卸载而丢失；跨 Chat 草稿应按 `chatId` 提升到稳定 Provider
 - 401 表示凭证无效或过期，应映射为 `anonymous`；500、网络失败和响应解析失败表示认证状态无法确认，应进入 `error`，不能伪装成未登录
 - 前端登录弹框只负责用户体验，不是权限边界；即使绕过 UI，后端仍必须独立拒绝未认证请求和越权资源访问
+- URL 参数属于不可信外部输入，不能直接作为普通对象属性读取：`toString`、`__proto__` 会命中原型链。键值存储使用 `Map`，并限制外部 ID 到已知合法集合
 
 ## Phase 0 — 项目骨架（重写参考骨架）
 
@@ -161,17 +162,18 @@
 - 学到：清除 Cookie 只处理浏览器副本，服务端删除 AuthSession 才完成当前设备的凭证撤销；重复退出返回 204 是为了客户端可安全重试
 - 面试向：基于 opaque Session 的认证把“浏览器持有原始 token”和“数据库保存摘要”分开，再通过请求级 dependency、统一错误映射与 Origin 校验，把身份恢复、撤销和 CSRF 防护收敛到清晰的安全边界
 
-### A5 公共 App Shell、认证弹框与按会话草稿 — ✓ 2026-10-28（commit 88a72ba）
+### A5 公共 App Shell、认证弹框与按会话草稿 — ✓ 2026-10-28（commit 88a72ba, 94d450e）
 
 - 目标：匿名和登录用户都进入同一 App Shell；启动时通过 `/api/auth/me` 恢复身份；匿名用户提交 Chat 时打开认证弹框，不引入 `/login` 重定向；不同 Chat 保留各自草稿
 - 验收通过：用户确认 `npm test`、`npm run lint`、`npm run build` 无问题；浏览器验证 Kyoto / Islands 草稿互不串、匿名提交弹框、登录后草稿保留、退出后清空
-- 可复查测试：`ChatDraftProvider > keeps separate drafts while switching between chats`、`ChatDraftProvider > preserves anonymous drafts across login and clears them on logout`、`Composer > edits and submits the draft`、`Composer > blocks submission while the session is unknown`
-- 关键边界：`checking` 只等待身份恢复；`anonymous` 才打开登录框；`error` 表示认证状态未知并禁止发送；前端不读取 Cookie，也未使用 `localStorage` / `sessionStorage` 保存 token
+- 可复查测试：`ChatDraftProvider > keeps separate drafts while switching between chats`、`ChatDraftProvider > preserves anonymous drafts across login and clears them on logout`、`ChatDraftProvider > treats toString / __proto__ as a regular draft key`、`resolveChatId > rejects unsafe URL key toString / __proto__`、`Composer > edits and submits the draft`、`Composer > blocks submission while the session is unknown`
+- 关键边界：`checking` 只等待身份恢复；`anonymous` 才打开登录框；`error` 表示认证状态未知并禁止发送；前端不读取 Cookie，也未使用 `localStorage` / `sessionStorage` 保存 token；`chat` URL 参数先经过合法 ID 解析
 - 关键代码：`frontend/src/features/chat/ChatDraftProvider.tsx`、`ChatDraftContext.ts`、`routes/ChatPage.tsx`、`features/chat/Composer.tsx`
 - 分工：用户完成 Composer 状态与 `state/actions` 合约的初版判断；Codex 补全草稿 Provider、路由接线、显式状态和测试，并逐文件讲解
 - 学到：跨页面或跨资源的客户端状态要放在稳定 Provider 中，并按稳定资源 ID 建索引；Composer 只消费 `state + actions`，认证和发送决策留在页面容器
 - 学到：受控输入每次有效输入都会同步本地 React 状态并触发消费者重渲染，但不会请求后端；submit 读取的是最新渲染状态。若改为非受控输入，则必须额外设计切换、失焦和卸载时的草稿保存
 - 学到：匿名登录后保留草稿、退出或切换账号时清空草稿，是体验与隐私的组合契约；状态所有者变化不能简单依赖组件重新挂载，否则登录本身也可能清掉用户刚输入的草稿
+- 学到：动态键的查找表应使用 `Map` 或 null-prototype object；外部 URL 参数还要先经过 allowlist / schema 边界，不能把“是字符串”误当成“是合法资源 ID”
 - 面试向：公共 App Shell 配合动作级认证拦截，可以在不牺牲匿名浏览的前提下建立登录入口；草稿由按 `chatId` 索引的 Provider 管理，认证状态与纯 UI Composer 解耦，并通过浏览器行为测试和状态迁移测试验证
 
 ### A6 Trip 最小创建与读取 — 下一步
