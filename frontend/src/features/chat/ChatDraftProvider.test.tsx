@@ -71,4 +71,43 @@ describe("ChatDraftProvider", () => {
       expect(screen.getByLabelText("Draft")).toHaveValue("");
     });
   });
+
+  it.each(["toString", "__proto__"])(
+    "treats %s as a regular draft key",
+    async (chatId) => {
+      const user = userEvent.setup();
+
+      render(
+        <ChatDraftProvider currentUserId={null}>
+          <UnsafeKeyHarness chatId={chatId} />
+        </ChatDraftProvider>,
+      );
+
+      const draftInput = screen.getByLabelText("Unsafe draft");
+      expect(draftInput).toHaveValue("");
+
+      await user.type(draftInput, "Safe draft");
+      expect(draftInput).toHaveValue("Safe draft");
+
+      await user.click(screen.getByRole("button", { name: "Clear draft" }));
+      expect(draftInput).toHaveValue("");
+    },
+  );
 });
+
+const UnsafeKeyHarness = ({ chatId }: { chatId: string }) => {
+  const { draft, changeDraft, clearDraft } = useChatDraft(chatId);
+
+  return (
+    <div>
+      <textarea
+        aria-label="Unsafe draft"
+        value={draft}
+        onChange={(event) => changeDraft(event.target.value)}
+      />
+      <button type="button" onClick={clearDraft}>
+        Clear draft
+      </button>
+    </div>
+  );
+};

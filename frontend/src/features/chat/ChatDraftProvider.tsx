@@ -16,9 +16,9 @@ export const ChatDraftProvider = ({
   currentUserId,
   children,
 }: ChatDraftProviderProps) => {
-  const [draftsByChatId, setDraftsByChatId] = useState<Record<string, string>>(
-    {},
-  );
+  const [draftsByChatId, setDraftsByChatId] = useState<
+    ReadonlyMap<string, string>
+  >(() => new Map());
   const previousUserIdRef = useRef(currentUserId);
 
   useEffect(() => {
@@ -26,7 +26,7 @@ export const ChatDraftProvider = ({
 
     // 匿名草稿需要跨登录保留；退出登录或切换账号时清理隐私数据。
     if (previousUserId !== null && previousUserId !== currentUserId) {
-      setDraftsByChatId({});
+      setDraftsByChatId(new Map());
     }
 
     previousUserIdRef.current = currentUserId;
@@ -36,21 +36,23 @@ export const ChatDraftProvider = ({
     () => ({
       updateDraft: (chatId, draft) => {
         setDraftsByChatId((current) => {
-          if (current[chatId] === draft) {
+          if (current.get(chatId) === draft) {
             return current;
           }
 
-          return { ...current, [chatId]: draft };
+          const next = new Map(current);
+          next.set(chatId, draft);
+          return next;
         });
       },
       clearDraft: (chatId) => {
         setDraftsByChatId((current) => {
-          if (!(chatId in current)) {
+          if (!current.has(chatId)) {
             return current;
           }
 
-          const next = { ...current };
-          delete next[chatId];
+          const next = new Map(current);
+          next.delete(chatId);
           return next;
         });
       },

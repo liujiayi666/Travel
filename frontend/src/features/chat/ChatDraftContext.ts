@@ -7,7 +7,7 @@ export interface ChatDraftActions {
 
 export interface ChatDraftContextValue {
   state: {
-    draftsByChatId: Readonly<Record<string, string>>;
+    draftsByChatId: ReadonlyMap<string, string>;
   };
   actions: ChatDraftActions;
 }
@@ -29,7 +29,7 @@ export const useChatDraft = (chatId: string) => {
   const context = useChatDraftContext();
 
   return {
-    draft: context.state.draftsByChatId[chatId] ?? "",
+    draft: context.state.draftsByChatId.get(chatId) ?? "",
     changeDraft: (draft: string) =>
       context.actions.updateDraft(chatId, draft),
     clearDraft: () => context.actions.clearDraft(chatId),

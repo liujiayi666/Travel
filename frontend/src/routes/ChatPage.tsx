@@ -1,5 +1,6 @@
 import { useAuth } from "@features/auth/AuthContext";
 import { useChatDraft } from "@features/chat/ChatDraftContext";
+import { resolveChatId } from "@features/chat/chats";
 import type { ComposerPhase } from "@features/chat/Composer";
 import { Section } from "@features/chat/Section";
 import { useModal } from "@shared/components/Modal/ModalContext";
@@ -11,7 +12,7 @@ export const ChatPage = () => {
   const {
     actions: { open: openModal },
   } = useModal();
-  const activeChatId = searchParams.get("chat") ?? "kyoto";
+  const activeChatId = resolveChatId(searchParams.get("chat"));
   const { draft, changeDraft } = useChatDraft(activeChatId);
   const composerPhase: ComposerPhase =
     auth.status === "checking"

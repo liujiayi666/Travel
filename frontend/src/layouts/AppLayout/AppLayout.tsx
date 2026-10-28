@@ -4,6 +4,7 @@ import {
   useAuth,
   useAuthActions,
 } from "@features/auth/AuthContext";
+import { resolveChatId } from "@features/chat/chats";
 import { useModal } from "@shared/components/Modal/ModalContext";
 import type { AccountMenuItem } from "./AccountMenu";
 import { AppShell } from "./AppShell";
@@ -20,7 +21,7 @@ export const AppLayout = () => {
   const [searchParams] = useSearchParams();
   const activeNavigationId =
     searchParams.get("section") ?? "trip-planner";
-  const activeChatId = searchParams.get("chat") ?? "kyoto";
+  const activeChatId = resolveChatId(searchParams.get("chat"));
 
   const isAuthenticated = auth.status === "authenticated";
   const displayName =
