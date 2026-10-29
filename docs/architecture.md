@@ -225,7 +225,7 @@ Agent 循环是：
 → LLM 决定继续调用或生成最终回答
 ```
 
-第一版只提供三个工具：
+Agent 形成后逐步接入以下工具，不要求一次做满：
 
 ```text
 search_places(destination, interests)
@@ -237,7 +237,8 @@ save_itinerary_item(trip_id, item)
 
 - Pydantic 输入 Schema。
 - 明确返回结构。
-- 用户和 Trip 权限检查。
+- 从服务端认证上下文取得用户身份，不接受模型声明的 `userId`。
+- 仅在工具访问 Trip 资源时检查成员权限；非成员访问统一表现为资源不存在。
 - 超时、重试边界和错误映射。
 - 结构化日志。
 - 修改数据前的用户确认。
@@ -248,10 +249,10 @@ Agent 运行必须限制最大步骤数、总时长、token 和成本。LLM API 
 
 ```python
 class LlmProvider(Protocol):
-    async def stream(self, request: LlmRequest) -> AsyncIterator[AgentEvent]: ...
+    async def complete(self, request: LlmRequest) -> LlmResponse: ...
 ```
 
-业务层消费 `AgentEvent`，而不是直接依赖任一供应商的原始 event 类型。DeepSeek 与 GLM 的差异收敛在 Provider 适配层。
+第一阶段先使用非流式 `complete()`；需要流式输出时再增加 `stream()`。业务层消费自己的请求、响应与 Agent 事件，而不是直接依赖任一供应商的原始 event 类型。DeepSeek 与 GLM 的差异收敛在 Provider 适配层。
 
 ## 9. 核心数据模型
 
@@ -306,12 +307,15 @@ DELETE /api/trips/{tripId}
 ### 10.3 对话与 AI
 
 ```text
+POST /api/chat                         A6 单轮、非流式、不持久化
 GET  /api/trips/{tripId}/messages
 POST /api/trips/{tripId}/runs/stream    SSE 流式生成
 POST /api/runs/{runId}/cancel
 ```
 
-第一版可用 POST + `fetch()` 读取 `ReadableStream`。需要自动重连和任务恢复时，再演进为“POST 创建 Run + GET EventSource 订阅事件”。
+`POST /api/chat` 用于先打通“已认证用户输入一条消息 → Provider → 返回完整答案”的最小链路，不保存 Message，也不调用工具。等持久化与 Trip 资源接入后，聊天再迁移到 Trip 下的 Conversation / Run API。
+
+需要流式回答时，第一版可用 POST + `fetch()` 读取 `ReadableStream`。需要自动重连和任务恢复时，再演进为“POST 创建 Run + GET EventSource 订阅事件”。
 
 ### 10.4 文件
 
@@ -467,23 +471,33 @@ outputTokens
 
 ### Phase 2：最小旅行纵向切片
 
-- 创建和读取 Trip。
-- 输入一条消息并调用 LLM，先返回非流式答案。
-- 保存 Message。
+- 已认证用户通过 `POST /api/chat` 输入一条消息，获得非流式完整答案。
+- Route 只负责 HTTP；Chat Service 通过 Provider 接口调用 DeepSeek。
+- 使用 fake provider 验证成功、超时和上游失败；密钥只存在于后端 `.env`。
+- 第一版不创建 Trip、不保存 Message、不调用工具，也不做流式输出。
 
-完成标准：从 UI 到数据库、Provider 和 LLM 的完整链路可用。
+完成标准：从现有 Chat UI 到自己的 `/api`、Chat Service、Provider 和 LLM 的链路可用；刷新后不承诺恢复历史消息。
 
 ### Phase 3：Agent 核心与 eval
 
-- Provider 接口与 DeepSeek 默认、GLM 可切换适配。
-- 一个只读工具，覆盖 Schema 校验、权限、超时和稳定错误。
+- Provider 支持结构化工具调用，DeepSeek 默认、GLM 可切换适配。
+- 先接入一个只读工具的完整调用闭环，覆盖 Schema 校验、超时和稳定错误。
+- 单个工具闭环稳定后，再扩展 Agent loop，而不是一次实现所有工具。
 - Agent loop 状态机、最大步骤/时长/token、取消和终止状态。
 - AgentRun / ToolCall trace、成本和延迟记录。
-- 固定 eval 场景：正常、工具失败、越权/注入、达到上限。
+- 固定 eval 场景：正常、工具失败、非法参数、达到上限；工具开始访问用户资源后加入越权与注入场景。
 
 完成标准：Agent 能完成一次受控工具调用，失败和超限不会永久挂起，且回归场景可重复运行。
 
-### Phase 4：SSE
+### Phase 4：Trip 资源权限与持久化
+
+- 当 `save_itinerary_item(trip_id, ...)` 一类工具出现时，建立最小 Trip / TripMember。
+- 所有带 `trip_id` 的读取、写入和工具执行都在 Service 层验证当前用户成员权限。
+- 建立 Conversation / Message / AgentRun / ToolCall 的必要持久化。
+
+完成标准：伪造或跨用户 `trip_id` 无法操作资源，非成员访问不泄露资源是否存在；聊天与工具轨迹可以在刷新后读回。
+
+### Phase 5：SSE
 
 - 自定义事件协议。
 - 流式文本、工具状态、取消和错误。
@@ -491,26 +505,26 @@ outputTokens
 
 完成标准：慢流、取消、断网和错误都有明确 UI 状态，且不破坏 Agent 已有的终止语义。
 
-### Phase 5：文件上传
+### Phase 6：文件上传
 
 - MinIO、Presigned URL、进度和 Attachment。
 - PDF 文本提取作为后台任务。
 
 完成标准：上传不会经过 FastAPI 内存中转，失败可重试。
 
-### Phase 6：WebSocket 协作
+### Phase 7：WebSocket 协作
 
 - Trip 房间、在线成员、投票和重连。
 
 完成标准：两个浏览器窗口可实时同步投票和在线状态。
 
-### Phase 7：工程与性能
+### Phase 8：工程与性能
 
 - 补齐测试和可观测性。
 - OpenAPI 类型生成。
 - 消息虚拟化、数据库索引和性能报告。
 
-### Phase 8：可选 SSR 专项
+### Phase 9：可选 SSR 专项
 
 为公开 Trip 分享页增加 Next.js 或 React Router SSR，学习 HTML streaming、hydration 和 SEO。不要在核心 MVP 尚未闭环时引入第二个服务端渲染框架。
 
@@ -537,7 +551,7 @@ outputTokens
 
 - [x] 确认第一版只做单用户 Trip，不先做协作。
 - [x] 确认前端使用 Vite SPA，SSR 放到后期专项。
-- [ ] 确认第一版 LLM 调用先非流式，再升级 SSE；DeepSeek 默认、GLM 可切换。
+- [x] 确认第一版 LLM 调用先非流式，再升级 SSE；DeepSeek 默认、GLM 可切换。
 - [ ] 确认本地使用 PostgreSQL 和 MinIO。
 - [x] 确认认证使用 Cookie Session。
 - [ ] 定义首批 API Schema 和错误格式。

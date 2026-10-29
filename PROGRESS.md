@@ -31,6 +31,7 @@
 | 3 | 2026-10-23 | 路线调整：认证优先；完成 User / AuthSession 模型和首份 Alembic 迁移 |
 | 4 | 2026-10-27 | 完成 Cookie Session Route、统一错误映射与 Origin 校验 |
 | 5 | 2026-10-28 | 完成公共 App Shell、Chat 动作级认证弹框与按会话隔离的草稿状态 |
+| 6 | 2026-10-29 | 路线调整：先打通单轮 Chat 与 Provider，再加入只读工具和资源权限 |
 
 ## 易错本
 
@@ -176,31 +177,56 @@
 - 学到：动态键的查找表应使用 `Map` 或 null-prototype object；外部 URL 参数还要先经过 allowlist / schema 边界，不能把“是字符串”误当成“是合法资源 ID”
 - 面试向：公共 App Shell 配合动作级认证拦截，可以在不牺牲匿名浏览的前提下建立登录入口；草稿由按 `chatId` 索引的 Provider 管理，认证状态与纯 UI Composer 解耦，并通过浏览器行为测试和状态迁移测试验证
 
-### A6 Trip 最小创建与读取 — 下一步
+### A6 非流式单轮 Chat 最小纵向切片 — 下一步
 
-- 训练能力：服务端资源归属与成员权限。Agent 工具未来可以接收用户提供的 `trip_id`，所以必须在写入数据库前独立验证当前用户是否有权访问该 Trip，不能相信前端或模型参数
-- 目标：建立最小 `Trip` 与 owner `TripMember` 数据模型、Alembic 迁移、请求级 Schema、Service 与认证 API；实现创建 Trip、列出当前用户可访问 Trip、读取单个 Trip
-- 接口契约：`POST /api/trips`、`GET /api/trips`、`GET /api/trips/{tripId}`；创建时 Trip 与 owner membership 在同一事务提交
-- 最小字段：Trip 标题、目的地、开始日期、结束日期；预算与人数等字段在第一条 Trip 纵向切片跑通后再补，避免把通用 CRUD 一次做满
-- 验收：未认证请求返回 401；创建者可在列表中读回并刷新后仍存在；非成员读取同一 ID 返回 404，避免通过状态码泄露资源是否存在；数据库确认 owner membership 与 Trip 同事务持久化
-- 证据要求：真实 PostgreSQL 集成测试覆盖创建、列表隔离、非成员访问和回滚；迁移 `upgrade` / `downgrade` 可执行；前端至少展示创建后的 Trip 并刷新读回
-- 运行与证据：pytest 集成测试名称、Alembic revision、浏览器 Network / 页面结果；本步不接 LLM，也不先引入缓存库
-- 状态：待开始；进入后由 `/tutor` 先出权限与状态边界热身题，再给 TODO 骨架
+- 训练能力：LLM Provider 边界。业务 Service 只依赖应用自己的请求、响应和错误类型，不依赖 DeepSeek / GLM 的 SDK 或原始事件；使用 fake provider 可在无网络、无真实密钥时稳定测试失败。
+- 目标：实现 `POST /api/chat`，接收一条已认证用户消息并返回完整答案；Route 只处理 HTTP，Chat Service 调用 Provider，DeepSeek 从 `base_url`、`model`、API Key 环境配置创建；现有 Chat UI 接入应用自己的 `/api` 并展示结果
+- 接口契约：请求只包含用户愿意发送的消息文本，响应只包含应用定义的答案结构；不接受客户端传入 `user_id`、模型名或供应商密钥；写请求继续检查 trusted Origin
+- 明确不做：不建 Trip / TripMember、不保存 Message、不做多轮历史、不调用工具、不做 SSE 流式输出
+- 验收：未登录返回 401；空白或超长消息返回 422；fake provider 正常返回时 API 返回答案；Provider 超时和上游错误映射为稳定 HTTP 错误；浏览器可见一次完整问答，Network 证明前端只请求自己的 `/api`
+- 安全与证据：真实 Provider 仅做手工 smoke test，不进入默认测试；测试名称、冻结的 Provider fake 场景、实际错误状态码和浏览器 Network 均需记录；确认 API Key 不进入前端、响应或日志
+- 状态：待开始；进入后由 `/tutor` 先讲解 Provider 契约并给出 TODO 骨架
+
+### A7 单只读工具调用闭环 — 后续
+
+- 训练能力：Tool contract。让模型提出结构化工具调用，应用后端独立校验工具名与参数，执行后把结构化结果交还模型生成最终答案。
+- 首个工具：`get_weather(destination, date_range)`；此时不访问用户私有资源，因此暂不需要 Trip 权限。
+- 验收：模型选择直接回答与选择工具都由 fake provider 可重复验证；未知工具、缺失/伪造参数、工具超时和工具失败都有稳定结果；真实 smoke test 证明一次天气问答闭环。
+- 明确不做：暂不实现任意多步循环、工具并行调用或持久化 ToolCall trace。
+
+### A8 Agent Loop、限额、Trace 与 Eval — 后续
+
+- 训练能力：受控循环与可观测性。明确最大步骤、总时长、token 上限、成功/失败/取消终止状态，任何路径都不能永久停在 running。
+- 验收：固定场景覆盖正常回答、正常工具调用、工具失败、非法参数、达到步骤上限；记录每轮耗时、工具名、状态、token 与失败原因；重复运行结果可判断通过或失败。
+- 明确不做：不为堆叠功能接入更多工具；先把循环可靠性证明清楚。
+
+### A9 Trip 资源权限与首个写入工具 — 后续
+
+- 训练能力：服务端资源归属与成员权限。模型或用户传入的 `trip_id` 是不可信输入，必须由后端结合已认证用户查数据库确认成员关系。
+- 目标：建立最小 `Trip` / `TripMember`、创建与读取 API；在 `save_itinerary_item(trip_id, ...)` 前复用统一授权边界；Trip 与 owner membership 同事务提交
+- 验收：未认证 401；列表只返回成员可访问 Trip；非成员读取真实存在的 Trip 返回 404；伪造 `trip_id` 的工具调用无法写入；真实 PostgreSQL 覆盖列表隔离、越权拒绝和事务回滚
+- 明确不做：普通 Trip 表单、列表 UI 或完整 CRUD；关键学习点是 Agent 工具安全边界，不是页面数量
+
+### A10 持久化与 SSE 流式展示 — 后续
+
+- 将稳定的 Chat、ToolCall 与必要 Run 结果持久化，再把非流式回答升级为 SSE。
+- 验收覆盖刷新后恢复、半途断流、取消、错误恢复与服务端取消上游请求；不破坏 A8 已建立的终止语义。
 
 ## 下一步
 
-进入 A6：Trip 最小创建与读取。关键学习点不是 CRUD，而是用服务端 Trip 成员权限建立未来 Agent 工具调用的资源边界。前端仍只消费应用自己的 `/api`，不得读取或持久化 HttpOnly Session token。
+进入 A6：非流式单轮 Chat 最小纵向切片。先用 Provider 边界打通“用户输入 → 自己的 `/api` → Service → LLM → 答案”，暂不引入 Trip、数据库消息持久化、工具或流式协议。前端仍只消费应用自己的 `/api`，不得接触供应商密钥、原始 Provider 事件或 HttpOnly Session token。
 
 后续顺序：
 
-1. A6：Trip 最小创建与读取
-2. A7：Provider 边界 + 非流式 Chat + Message 持久化
-3. A8：Agent 核心（单工具、循环、限额、trace、eval）
-4. A9：SSE 流式展示、取消与错误恢复
-5. 文件上传、WebSocket 协作、工程化与性能专项
+1. A6：非流式单轮 Chat 最小纵向切片
+2. A7：天气单工具调用闭环
+3. A8：Agent Loop、限额、Trace 与 Eval
+4. A9：Trip 资源权限与首个写入工具
+5. A10：持久化与 SSE 流式展示
+6. 文件上传、WebSocket 协作、工程化与性能专项
 
-Agent 核心能力不延后到文件上传和协作功能之后。每个 A6–A8 步骤在开始前由 /tutor 补充具体目标、验收和证据要求。
+Agent 核心能力不延后到文件上传和协作功能之后。每个 A6–A10 步骤在开始前由 /tutor 补充具体目标、验收和证据要求。
 
 测试环境 TODO（后续学习）：评估 nox/tox 或 Makefile 等统一入口，区分 unit / integration-local / integration-CI / e2e 的依赖与数据库配置；生产数据库永远不参与测试。
 
-准备：注册 platform.deepseek.com 拿 API Key（`sk-` 开头），A7 接入 LLM 前放进 `backend/.env`；A6 不需要该密钥。
+准备：注册 platform.deepseek.com 拿 API Key（`sk-` 开头），A6 接入 LLM 前放进 `backend/.env`。真实 Provider 只用于手工 smoke test；自动化测试使用 fake provider。
