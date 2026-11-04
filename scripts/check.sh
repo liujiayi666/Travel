@@ -56,8 +56,13 @@ if [ "$mode" = "full" ]; then
     docker compose exec -T db createdb -U travel travel_test
   fi
 
+  test_database_url="${TEST_DATABASE_URL:-postgresql+psycopg_async://travel:travel@localhost:5432/travel_test}"
+
   (
     cd backend
-    uv run --frozen pytest
+    DATABASE_URL="$test_database_url" APP_ENV=test \
+      uv run --frozen alembic upgrade head
+    DATABASE_URL="$test_database_url" APP_ENV=test \
+      uv run --frozen pytest
   )
 fi
