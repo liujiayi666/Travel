@@ -34,6 +34,7 @@
 | 6 | 2026-10-29 | 路线调整：先打通单轮 Chat 与 Provider，再加入只读工具和资源权限 |
 | 7 | 2026-11-03 | 路线重排：先完成可用文本对话与多轮上下文，再进入流式、Tool、Agent Loop、RAG 和长期记忆 |
 | 8 | 2026-11-04 | 路线调整：前端只拉取和展示历史；后端持久化 Conversation 并在调用 LLM 前组装有预算的上下文，随后再做 SSE |
+| 9 | 2026-11-04 | 完成 A6 单轮 Chat 端到端闭环验收，并明确 Provider 内部请求错误与上游错误的边界 |
 
 ## 易错本
 
@@ -72,6 +73,10 @@
 - 401 表示凭证无效或过期，应映射为 `anonymous`；500、网络失败和响应解析失败表示认证状态无法确认，应进入 `error`，不能伪装成未登录
 - 前端登录弹框只负责用户体验，不是权限边界；即使绕过 UI，后端仍必须独立拒绝未认证请求和越权资源访问
 - URL 参数属于不可信外部输入，不能直接作为普通对象属性读取：`toString`、`__proto__` 会命中原型链。键值存储使用 `Map`，并限制外部 ID 到已知合法集合
+- Pylance 类型错误不等于运行时报错，Python 不会替我们检查注解；`append` 当前能跑不能证明消息契约正确，必须修类型边界而不是用“能运行”验收
+- API 边界错误要先分层：客户端 Schema 不符是 422，内部构造出非法 LLM 请求是 500，Provider 未配置是 503，上游调用或响应异常是 502，等待 Provider 超时是 504
+- 密钥不提交 Git 只是最低要求；浏览器代码、响应、日志和工作区都对使用者和调试工具可见，API Key 只能由后端运行环境读取
+- 模块级可变 history 会跨用户和并发请求共享，即使测试里能 mock 也不能作为会话存储；Conversation 必须使用请求级查询和所有权过滤
 
 ## Phase 0 — 项目骨架（重写参考骨架）
 
@@ -179,15 +184,20 @@
 - 学到：动态键的查找表应使用 `Map` 或 null-prototype object；外部 URL 参数还要先经过 allowlist / schema 边界，不能把“是字符串”误当成“是合法资源 ID”
 - 面试向：公共 App Shell 配合动作级认证拦截，可以在不牺牲匿名浏览的前提下建立登录入口；草稿由按 `chatId` 索引的 Provider 管理，认证状态与纯 UI Composer 解耦，并通过浏览器行为测试和状态迁移测试验证
 
-### A6 单轮非流式 Chat 端到端闭环 — 进行中
+### A6 单轮非流式 Chat 端到端闭环 — ✓ 2026-11-04（PR #12、#14）
 
-- 训练能力：LLM Provider 边界与最小 HTTP 纵向切片。业务 Service 只依赖应用自己的请求、响应和错误类型；使用 fake provider 可在无网络、无真实密钥时测试成功与失败。
-- 已完成：`POST /api/chat`、Provider 抽象、DeepSeek/GLM OpenAI 兼容适配、认证、Origin、输入校验、lifespan、稳定错误映射及 fake provider 自动化测试。
-- 待完成：配置一个当前账号确实可用的模型并完成一次真实成功调用；把现有 Chat UI 接到 `/api/chat`，展示用户消息、加载状态和助手回答。
-- 验收：浏览器可见一次真实一问一答，刷新后不要求保留历史；Network 证明前端只请求自己的 `/api`；API Key 不出现在前端、响应或日志
-- 明确不做：多轮历史、数据库 Message、工具调用和流式输出
+- 训练能力：LLM Provider 边界与最小 HTTP 纵向切片。业务 Service 只依赖应用自己的 DTO 和错误类型，Provider 适配供应商 SDK，fake provider 可无网络验证成功与失败。
+- 验收通过：已配置真实模型并完成一问一答；浏览器 Network 只请求应用自己的 `/api/chat`；API Key 未进入前端、响应或日志。
+- 验收通过：后端 51 passed、前端 23 passed；Ruff、Oxlint 和 production build 通过；本地 pre-commit/pre-push 门禁生效。
+- 可复查测试：`test_chat_returns_only_the_assistant_message`、`test_chat_requires_authentication`、`test_chat_rejects_client_supplied_user_or_model_fields`、`test_chat_rejects_missing_untrusted_origin`、`test_chat_maps_provider_failures`、`test_chat_maps_internal_llm_request_errors_to_500`；Provider 覆盖成功、空响应、空文本、角色转换、超时和 APIError。
+- 关键边界：`ChatRequest` 在 HTTP 边界返回 422；Provider 未配置返回 503；上游失败或非法响应返回 502；调用超时返回 504；应用内部构造非法 `LlmRequest` 返回安全的 500，不能伪装成 Bad Gateway。
+- 关键代码：`app/llm/contracts.py`、`openai_compatible_provider.py`、`dependencies.py`、`app/chat/router.py`、`service.py`、`presenter.py`、`frontend/src/features/chat/ChatSession.tsx`。
+- 学到：LLM API 是无状态函数，单轮请求只提交当前 user 消息；真正的多轮上下文需要 Conversation 持久化和服务端组装，而不是模块级 history。
+- 学到：Provider 隔离的价值是业务不依赖 OpenAI SDK 类型；供应商事件、异常和响应字段必须在适配层转换、过滤和映射。
+- 学到：错误码应按失败边界分类；`422/500/502/503/504` 不是同一种“LLM 出错”，错误分类错了会误导监控和排障。
+- 面试向：我通过内部 DTO、Provider 协议和 fake adapter 隔离了模型供应商，把认证、Origin、输入预算、外部超时和稳定错误映射串成最小纵向切片，并用真实 smoke test 与自动化失败路径共同证明链路，而不是只验证 happy path。
 
-### A7 Conversation 持久化与服务端上下文 — 后续
+### A7 Conversation 持久化与服务端上下文 — 进行中
 
 - 训练能力：建立服务端权威的 Conversation / Message，理解 LLM 无状态、消息所有权和上下文预算。前端只拉取历史用于展示，发送时只提交当前 `content`；Service 从数据库读取历史并拼装 system + 有限 user/assistant 消息，再调用 Provider。
 - 接口演进：新增 Conversation 列表、历史读取和发送消息 API；发送接口不接受客户端提交的完整 history、system 角色、角色标签或模型选择。
@@ -245,12 +255,12 @@
 
 ## 下一步
 
-继续完成 A6：后端基础已通过自动化测试，但还没有一次真实 Provider 成功返回，浏览器也尚未提交 `/api/chat`。先用一个可用模型完成真实一问一答，再进入 A7。A7 采用服务端权威 Conversation：前端只拉取和展示历史，发送时只提交当前 content；历史查询、上下文预算和 Provider 拼装在 Service 层完成。
+进入 A7.1：先定义 Conversation / Message 模型和数据库迁移。前端只拉取和展示历史，发送时只提交当前 content；后端持有权威历史、所有权检查和上下文预算，再在 Service 层组装 Provider 请求。
 
 后续顺序：
 
-1. A6：单轮非流式 Chat 端到端闭环
-2. A7：Conversation 持久化与服务端上下文
+1. A6：单轮非流式 Chat 端到端闭环 — ✓
+2. A7：Conversation 持久化与服务端上下文 — 进行中
 3. A8：SSE 流式文本
 4. A9：Tool Contract 与天气单工具闭环
 5. A10：Agent Loop、限额、Trace 与 Eval
@@ -262,6 +272,6 @@
 
 Agent 核心能力不延后到文件上传和协作功能之后。每个 A6–A15 步骤在开始前由 /tutor 补充具体目标、验收和证据要求；验收通过后才更新为完成。
 
-测试环境 TODO（后续学习）：评估 nox/tox 或 Makefile 等统一入口，区分 unit / integration-local / integration-CI / e2e 的依赖与数据库配置；生产数据库永远不参与测试。
+测试环境 TODO（后续学习）：在现有本地 hooks 基础上补 GitHub Actions，区分 unit / integration / e2e 的依赖与数据库配置；生产数据库永远不参与测试。
 
-准备：确认当前 DeepSeek / GLM 账号中实际可用的模型 ID，并把对应 API Key 放进 `backend/.env`。真实 Provider 只用于手工 smoke test；自动化测试使用 fake provider。
+准备：A7.1 由用户手写 Conversation / Message 的 typed SQLAlchemy 模型、外键级联、角色约束和索引；Codex 随后补 Alembic 脚手架、迁移检查与测试。

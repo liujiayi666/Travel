@@ -160,6 +160,20 @@
       </ul>
       <blockquote>用公共 Shell 保留匿名浏览，用动作级认证拦截建立登录入口，再把按资源 ID 隔离的草稿提升到稳定 Provider；前端状态流清晰后，服务端权限仍保持独立且不可绕过。</blockquote>
     </article>
+    <article class="cp">
+      <header>
+        <h2><a href="https://github.com/liujiayi666/Travel/pull/12">PR #12 · feat(chat): complete single-turn chat flow</a></h2>
+      </header>
+      <p class="cp-meta">A6 单轮非流式 Chat 端到端闭环 · 2026-11-04 · commit 66f7666 · 修正 5deda6b（PR #14）</p>
+      <ul>
+        <li>业务层依赖应用自己的 <code>LlmRequest</code> / <code>LlmResponse</code> DTO，由 OpenAI-compatible adapter 隔离 DeepSeek、GLM 和供应商 SDK 类型</li>
+        <li>HTTP 边界把 401、422、503、502、504 和内部 500 分开；空消息或非法角色属于应用内部契约违约，不是 Bad Gateway</li>
+        <li>AsyncOpenAI client 在 FastAPI lifespan 中创建并关闭，timeout、max retries 和 max tokens 来自后端配置，密钥不进入浏览器</li>
+        <li>前端用按 user/chat keyed 的 ChatSession 管理单轮消息、sending、错误恢复和草稿回滚；A6 只展示本轮，不把历史发送给模型</li>
+        <li>真实模型 smoke test、浏览器 Network、fake provider 成功/失败路径和本地 pre-commit/pre-push 共同构成可运行证据</li>
+      </ul>
+      <blockquote>用内部 DTO 和 Provider 协议隔离供应商，用明确的 HTTP 错误边界暴露可观测状态，再用真实调用与 fake adapter 分别验证集成漂移和失败路径。</blockquote>
+    </article>
   </div>
 </div>
 </body>
