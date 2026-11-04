@@ -44,4 +44,18 @@ describe("Composer", () => {
       screen.getByRole("button", { name: "Start planning" }),
     ).toBeDisabled();
   });
+
+  it("blocks editing and submission while sending", () => {
+    render(
+      <Composer
+        state={{ draft: "A trip to Kyoto", phase: "sending" }}
+        actions={{ changeDraft: vi.fn(), submit: vi.fn() }}
+      />,
+    );
+
+    expect(screen.getByLabelText("Describe your trip")).toBeDisabled();
+    expect(
+      screen.getByRole("button", { name: "Sending message" }),
+    ).toBeDisabled();
+  });
 });

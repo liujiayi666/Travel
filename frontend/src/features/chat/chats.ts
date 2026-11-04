@@ -6,6 +6,7 @@ export interface ChatSummary {
 
 export const defaultChatId = "kyoto";
 
+//TODO: mock data  need clean after A7 接入 Chat API
 export const recentChats: readonly ChatSummary[] = [
   {
     id: "kyoto",

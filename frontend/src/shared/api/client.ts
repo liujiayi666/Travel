@@ -27,6 +27,7 @@ export const httpRequest = async (
     } catch {
       throw new ApiError(response.status, message);
     }
+
     throw new ApiError(response.status, message);
   }
 

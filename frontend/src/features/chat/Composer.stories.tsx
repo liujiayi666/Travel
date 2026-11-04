@@ -42,6 +42,15 @@ export const CheckingSession: Story = {
   },
 };
 
+export const Sending: Story = {
+  args: {
+    state: {
+      draft: "",
+      phase: "sending",
+    },
+  },
+};
+
 export const SessionError: Story = {
   args: {
     state: {

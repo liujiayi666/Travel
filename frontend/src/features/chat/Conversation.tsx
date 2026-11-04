@@ -1,11 +1,20 @@
 import type { AuthState } from "@features/auth/type";
 import styles from "./Chat.module.css";
+import type { ChatMessage } from "./type";
 
 interface ConversationProps {
   auth: AuthState;
+  messages?: readonly ChatMessage[];
+  isSending?: boolean;
+  sendError?: string | null;
 }
 
-export const Conversation = ({ auth }: ConversationProps) => {
+export const Conversation = ({
+  auth,
+  messages = [],
+  isSending = false,
+  sendError = null,
+}: ConversationProps) => {
   return (
     <section className={styles.conversation} aria-live="polite">
       <div className={styles.assistantMessage}>
@@ -30,6 +39,32 @@ export const Conversation = ({ auth }: ConversationProps) => {
         <div className={styles.errorNotice} role="alert">
           <strong>We could not confirm your session.</strong>
           <span>{auth.message}</span>
+        </div>
+      )}
+
+      {messages.map((message, index) => (
+        <div
+          key={`${message.role}-${index}`}
+          className={
+            message.role === "assistant"
+              ? styles.assistantMessage
+              : styles.userMessage
+          }
+        >
+          <p>{message.content}</p>
+        </div>
+      ))}
+
+      {isSending && (
+        <p className={styles.status} role="status">
+          Thinking…
+        </p>
+      )}
+
+      {sendError && (
+        <div className={styles.errorNotice} role="alert">
+          <strong>We could not send your message.</strong>
+          <span>{sendError}</span>
         </div>
       )}
     </section>
