@@ -35,6 +35,7 @@
 | 7 | 2026-11-03 | 路线重排：先完成可用文本对话与多轮上下文，再进入流式、Tool、Agent Loop、RAG 和长期记忆 |
 | 8 | 2026-11-04 | 路线调整：前端只拉取和展示历史；后端持久化 Conversation 并在调用 LLM 前组装有预算的上下文，随后再做 SSE |
 | 9 | 2026-11-04 | 完成 A6 单轮 Chat 端到端闭环验收，并明确 Provider 内部请求错误与上游错误的边界 |
+| 10 | 2026-11-04 | 完成 A7.1 Conversation / Message 持久化模型、约束、索引与级联测试 |
 
 ## 易错本
 
@@ -77,6 +78,10 @@
 - API 边界错误要先分层：客户端 Schema 不符是 422，内部构造出非法 LLM 请求是 500，Provider 未配置是 503，上游调用或响应异常是 502，等待 Provider 超时是 504
 - 密钥不提交 Git 只是最低要求；浏览器代码、响应、日志和工作区都对使用者和调试工具可见，API Key 只能由后端运行环境读取
 - 模块级可变 history 会跨用户和并发请求共享，即使测试里能 mock 也不能作为会话存储；Conversation 必须使用请求级查询和所有权过滤
+- Alembic autogenerate 只生成差异草稿，不能可靠检测 CheckConstraint、trigger、view 或数据迁移；生成后必须人工补全并验证 upgrade/downgrade
+- 只为副作用存在的模型 import 会被 Ruff `F401 --fix` 删除；集中模型注册入口需要明确 `# noqa: F401`
+- PostgreSQL `now()` 在同一事务内返回相同事务时间；需要严格消息顺序时应显式写入递增时间，或增加独立 sequence 字段
+- 数据库外键负责完整性和级联删除，ORM relationship 只负责对象导航；没有对象导航需求时可暂不添加 relationship，避免跨模块 mapper 加载耦合
 
 ## Phase 0 — 项目骨架（重写参考骨架）
 
@@ -204,6 +209,23 @@
 - 验收：刷新和多设备可恢复同一 Conversation；第二次提问能正确引用第一轮内容；跨用户读取或发送统一返回 404；fake provider 能断言第二次调用收到服务端组装的有界上下文；超长或超量历史有明确预算策略。
 - 明确不做：LLM 总结压缩、向量检索、跨 Conversation 长期记忆、工具调用和 SSE
 
+#### A7.1 Conversation / Message 持久化模型 — ✓ 2026-11-04（commit cf1618b）
+
+- 验收通过：`alembic current` 为 `7729534e9371 (head)`；`alembic check` 无待生成操作；开发库实际存在两张表、两层 CASCADE、三条 CheckConstraint 和两个复合索引
+- 可复查测试：`test_conversation_persists_user_and_assistant_messages`、`test_message_rejects_invalid_role`、`test_conversation_rejects_blank_title`、`test_message_rejects_blank_content`、`test_deleting_user_cascades_conversation_and_messages`
+- 验收通过：后端 56 passed、前端 23 passed；Ruff、Oxlint、production build 以及 `check.sh full` 通过
+- 关键代码：`backend/app/conversations/models.py`、两份 Alembic migration、`backend/app/models.py`、`backend/tests/test_conversation_models.py`
+- 学到：所有权只存 Conversation，Message 经 `conversation_id` 间接归属；数据库外键负责完整性和级联，relationship 只负责对象导航
+- 学到：复合索引按 `(conversation_id, created_at, id)` 支持过滤、排序、限量读取和稳定 tie-break
+- 学到：`alembic check` 只能证明模型与数据库无明显 drift，不能证明 constraint 设计完整，也不能替代真实失败路径测试
+- 面试向：我用服务端权威模型、双层外键级联、数据库 CHECK 和复合索引建立 Conversation 基础，并通过真实 PostgreSQL 集成测试证明 role、空白内容和跨层级级联行为，而不是只验证建表成功
+
+#### A7.2 Conversation 列表与消息读取 API — 进行中
+
+- 训练能力：建立服务端所有权过滤和分页读取边界，前端只消费应用自己的只读 API。
+- 验收：Conversation 列表只返回当前用户的数据；消息按稳定时间顺序读取；跨用户 Conversation 统一返回 404；空列表和非 owner 有自动化测试。
+- 明确不做：发送消息、Provider 调用、上下文组装和 SSE
+
 ### A8 SSE 流式文本 — 后续
 
 - 训练能力：单向流式协议、增量渲染、取消和错误恢复。流式只改变传输方式，不改变 A7 的服务端 Conversation 与上下文语义。
@@ -255,23 +277,24 @@
 
 ## 下一步
 
-进入 A7.1：先定义 Conversation / Message 模型和数据库迁移。前端只拉取和展示历史，发送时只提交当前 content；后端持有权威历史、所有权检查和上下文预算，再在 Service 层组装 Provider 请求。
+进入 A7.2：实现 Conversation 列表和 Message 历史只读 API。所有查询必须在数据库中同时按资源 ID 与当前 `user_id` 过滤；读取顺序和 limit 由服务端固定。
 
 后续顺序：
 
 1. A6：单轮非流式 Chat 端到端闭环 — ✓
-2. A7：Conversation 持久化与服务端上下文 — 进行中
-3. A8：SSE 流式文本
-4. A9：Tool Contract 与天气单工具闭环
-5. A10：Agent Loop、限额、Trace 与 Eval
-6. A11：RAG 知识检索工具
-7. A12：Conversation 历史治理与高级压缩
-8. A13：长期记忆工具
-9. A14：Trip 权限、私有知识与写入工具
-10. A15：文件、协作与工程化
+2. A7.1：Conversation / Message 持久化模型 — ✓
+3. A7.2：Conversation 列表与消息读取 API — 进行中
+4. A8：SSE 流式文本
+5. A9：Tool Contract 与天气单工具闭环
+6. A10：Agent Loop、限额、Trace 与 Eval
+7. A11：RAG 知识检索工具
+8. A12：Conversation 历史治理与高级压缩
+9. A13：长期记忆工具
+10. A14：Trip 权限、私有知识与写入工具
+11. A15：文件、协作与工程化
 
 Agent 核心能力不延后到文件上传和协作功能之后。每个 A6–A15 步骤在开始前由 /tutor 补充具体目标、验收和证据要求；验收通过后才更新为完成。
 
 测试环境 TODO（后续学习）：在现有本地 hooks 基础上补 GitHub Actions，区分 unit / integration / e2e 的依赖与数据库配置；生产数据库永远不参与测试。
 
-准备：A7.1 由用户手写 Conversation / Message 的 typed SQLAlchemy 模型、外键级联、角色约束和索引；Codex 随后补 Alembic 脚手架、迁移检查与测试。
+准备：A7.2 由用户先定义列表和历史读取的查询边界，再手写 Service 查询；Route 只负责认证、HTTP 参数与响应映射。

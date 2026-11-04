@@ -174,6 +174,17 @@
       </ul>
       <blockquote>用内部 DTO 和 Provider 协议隔离供应商，用明确的 HTTP 错误边界暴露可观测状态，再用真实调用与 fake adapter 分别验证集成漂移和失败路径。</blockquote>
     </article>
+    <article class="cp">
+      <header><span class="id">cf1618b</span><time>2026-11-04</time><h2>A7.1 Conversation / Message 持久化模型</h2></header>
+      <ul>
+        <li>Conversation 持有 <code>user_id</code>；Message 通过 <code>conversation_id</code> 间接归属，避免双重所有权来源</li>
+        <li>User → Conversation → Message 使用两层 <code>ON DELETE CASCADE</code>，数据库保证引用完整性和清理</li>
+        <li>CHECK 约束阻止非法 role、空白 title/content；<code>alembic check</code> 不能可靠检测这些约束，必须人工维护 migration</li>
+        <li>复合索引 <code>(conversation_id, created_at, id)</code> 支持历史过滤、排序、limit 和稳定 tie-break；同事务时间相同问题留给 Service 显式排序时间解决</li>
+        <li>真实 PostgreSQL 测试覆盖正常消息、非法 role、空白字段和 User 删除后的两层级联</li>
+      </ul>
+      <blockquote>数据库 schema 的可靠性来自模型、可审查 migration、真实约束和失败路径测试四者一致，而不是把 autogenerate 的输出当成最终答案。</blockquote>
+    </article>
   </div>
 </div>
 </body>
