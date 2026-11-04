@@ -313,15 +313,20 @@ DELETE /api/trips/{tripId}
 ### 10.3 对话与 AI
 
 ```text
-POST /api/chat                         A6 单轮；A7 演进为应用自己的 messages 列表
-POST /api/chat/stream                  A8 同语义 SSE
-GET  /api/conversations/{id}/messages  A12 读取持久化历史
+POST /api/chat                         A6 单轮；A7 迁移到 Conversation API
+POST /api/conversations                A7 创建 Conversation
+GET  /api/conversations                A7 读取当前用户的 Conversation 列表
+GET  /api/conversations/{id}/messages  A7 分页读取历史
+POST /api/conversations/{id}/messages  A7 发送当前 content 并保存 user/assistant 消息
+POST /api/conversations/{id}/messages/stream  A8 同语义 SSE
 GET  /api/trips/{tripId}/messages
 POST /api/trips/{tripId}/runs/stream    SSE 流式生成
 POST /api/runs/{runId}/cancel
 ```
 
-A6 先打通“已认证用户输入一条消息 → Provider → 返回完整答案”，不保存 Message。A7 的请求演进为 `messages` 列表，由前端保存当前会话历史；system 消息由后端控制，客户端只能提交 user/assistant 历史。A8 在相同语义上增加 SSE。A12 再把历史所有权迁移到服务端 Conversation。
+A6 先打通“已认证用户输入一条消息 → Provider → 返回完整答案”，不保存 Message。A7 建立服务端权威的 Conversation / Message：前端只拉取历史用于展示，并在发送时提交当前 `content`；后端完成所有权检查、读取有限历史、上下文预算、system prompt 拼装和消息持久化。客户端不能提交完整 history 或 system 消息，避免伪造 assistant 内容、绕过预算或跨用户读取。
+
+A8 复用同一 Conversation 语义增加 SSE，流式只改变传输和增量展示方式。A12 进一步治理长会话的分页、保留、摘要压缩与成本，不改变“后端拥有模型上下文”的所有权。
 
 需要流式回答时，第一版可用 POST + `fetch()` 读取 `ReadableStream`。需要自动重连和任务恢复时，再演进为“POST 创建 Run + GET EventSource 订阅事件”。
 
@@ -488,11 +493,12 @@ outputTokens
 
 ### Phase 3：会话内多轮与流式文本
 
-- `ChatRequest` 演进为应用自己的 `messages` 列表，客户端只提交 user/assistant 历史。
-- system prompt 由服务端控制；限制消息数量、字符数和上下文预算。
+- Conversation / Message 持久化；客户端点击 Conversation 后拉取历史用于展示。
+- 客户端发送时只提交当前 user `content`，不提交完整 `messages` 历史；服务端从数据库读取权威历史。
+- system prompt、消息数量、字符数和上下文预算由服务端控制；Provider 请求在 Service 层组装。
 - 多轮语义稳定后，通过 SSE 提供增量文本、结束、取消和错误事件。
 
-完成标准：同一页面中连续多轮对话能引用前文；刷新后不要求恢复；流式和非流式共享同一 Conversation 语义。
+完成标准：刷新后可恢复同一 Conversation；连续多轮对话能引用前文；跨用户访问被拒绝；流式和非流式共享同一 Conversation 与上下文组装语义。
 
 ### Phase 4：Agent 工具与受控循环
 
@@ -513,13 +519,13 @@ outputTokens
 
 完成标准：固定 eval 集能检索正确资料，回答可追溯到来源，检索失败不会破坏 Agent 终止状态。
 
-### Phase 6：Conversation 持久化与长期记忆
+### Phase 6：Conversation 历史治理与长期记忆
 
-- 建立用户拥有的 Conversation / Message，支持历史读取和上下文预算。
+- 为长会话增加稳定分页、保留策略、摘要压缩、成本与质量评估。
 - 建立来源明确、可删除、可更新的 Memory；写入前遵守用户确认和敏感信息规则。
-- 跨用户访问返回 404，不泄露资源是否存在。
+- 跨用户访问始终返回 404，不泄露资源是否存在。
 
-完成标准：刷新后恢复会话；长期记忆按用户隔离；用户能查看、修正和删除记忆。
+完成标准：超长会话有可解释的压缩与降级策略；长期记忆按用户隔离；用户能查看、修正和删除记忆。
 
 ### Phase 7：Trip、私有知识与写入工具
 
