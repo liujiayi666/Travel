@@ -1,4 +1,5 @@
 import type { AuthState } from "@features/auth/type";
+import type { ChatMessage } from "./type";
 import {
   Composer,
   type ComposerActions,
@@ -9,6 +10,9 @@ import styles from "./Chat.module.css";
 
 interface SectionProps {
   auth: AuthState;
+  messages?: readonly ChatMessage[];
+  isSending?: boolean;
+  sendError?: string | null;
   composer: {
     state: ComposerState;
     actions: ComposerActions;
@@ -19,6 +23,9 @@ interface SectionProps {
 
 export const Section = ({
   auth,
+  messages = [],
+  isSending = false,
+  sendError = null,
   composer,
   primaryActionLabel,
   onPrimaryAction,
@@ -39,7 +46,12 @@ export const Section = ({
         </button>
       </header>
 
-      <Conversation auth={auth} />
+      <Conversation
+        auth={auth}
+        messages={messages}
+        isSending={isSending}
+        sendError={sendError}
+      />
       <Composer state={composer.state} actions={composer.actions} />
     </section>
   );

@@ -265,6 +265,9 @@ Conversation
 Message
 AgentRun
 ToolCall
+Memory
+KnowledgeDocument
+KnowledgeChunk
 Attachment
 ItineraryItem
 ```
@@ -272,11 +275,14 @@ ItineraryItem
 关系：
 
 ```text
-User 1—N TripMember N—1 Trip
-Trip 1—N Conversation
+User 1—N Conversation
+User 1—N Memory
+Conversation N—0..1 Trip
 Conversation 1—N Message
 Message 1—N AgentRun
 AgentRun 1—N ToolCall
+KnowledgeDocument 1—N KnowledgeChunk
+Trip 1—N TripMember N—1 User
 Trip 1—N Attachment
 Trip 1—N ItineraryItem
 ```
@@ -307,13 +313,15 @@ DELETE /api/trips/{tripId}
 ### 10.3 对话与 AI
 
 ```text
-POST /api/chat                         A6 单轮、非流式、不持久化
+POST /api/chat                         A6 单轮；A7 演进为应用自己的 messages 列表
+POST /api/chat/stream                  A8 同语义 SSE
+GET  /api/conversations/{id}/messages  A12 读取持久化历史
 GET  /api/trips/{tripId}/messages
 POST /api/trips/{tripId}/runs/stream    SSE 流式生成
 POST /api/runs/{runId}/cancel
 ```
 
-`POST /api/chat` 用于先打通“已认证用户输入一条消息 → Provider → 返回完整答案”的最小链路，不保存 Message，也不调用工具。等持久化与 Trip 资源接入后，聊天再迁移到 Trip 下的 Conversation / Run API。
+A6 先打通“已认证用户输入一条消息 → Provider → 返回完整答案”，不保存 Message。A7 的请求演进为 `messages` 列表，由前端保存当前会话历史；system 消息由后端控制，客户端只能提交 user/assistant 历史。A8 在相同语义上增加 SSE。A12 再把历史所有权迁移到服务端 Conversation。
 
 需要流式回答时，第一版可用 POST + `fetch()` 读取 `ReadableStream`。需要自动重连和任务恢复时，再演进为“POST 创建 Run + GET EventSource 订阅事件”。
 
@@ -469,62 +477,77 @@ outputTokens
 
 完成标准：浏览器能恢复登录，未登录请求被拒，权限检查不依赖前端。
 
-### Phase 2：最小旅行纵向切片
+### Phase 2：最小文本聊天
 
 - 已认证用户通过 `POST /api/chat` 输入一条消息，获得非流式完整答案。
-- Route 只负责 HTTP；Chat Service 通过 Provider 接口调用 DeepSeek。
+- 浏览器展示一次真实一问一答；刷新后暂不要求恢复历史。
+- Route 只负责 HTTP；Chat Service 通过 Provider 接口调用模型。
 - 使用 fake provider 验证成功、超时和上游失败；密钥只存在于后端 `.env`。
-- 第一版不创建 Trip、不保存 Message、不调用工具，也不做流式输出。
 
-完成标准：从现有 Chat UI 到自己的 `/api`、Chat Service、Provider 和 LLM 的链路可用；刷新后不承诺恢复历史消息。
+完成标准：从 Chat UI 到自己的 `/api`、Chat Service、Provider 和真实 LLM 的链路可用。
 
-### Phase 3：Agent 核心与 eval
+### Phase 3：会话内多轮与流式文本
+
+- `ChatRequest` 演进为应用自己的 `messages` 列表，客户端只提交 user/assistant 历史。
+- system prompt 由服务端控制；限制消息数量、字符数和上下文预算。
+- 多轮语义稳定后，通过 SSE 提供增量文本、结束、取消和错误事件。
+
+完成标准：同一页面中连续多轮对话能引用前文；刷新后不要求恢复；流式和非流式共享同一 Conversation 语义。
+
+### Phase 4：Agent 工具与受控循环
 
 - Provider 支持结构化工具调用，DeepSeek 默认、GLM 可切换适配。
-- 先接入一个只读工具的完整调用闭环，覆盖 Schema 校验、超时和稳定错误。
-- 单个工具闭环稳定后，再扩展 Agent loop，而不是一次实现所有工具。
+- 先接入一个只读工具的完整闭环，覆盖 Schema 校验、超时和稳定错误。
+- 单个工具闭环稳定后，再扩展 Agent loop。
 - Agent loop 状态机、最大步骤/时长/token、取消和终止状态。
 - AgentRun / ToolCall trace、成本和延迟记录。
-- 固定 eval 场景：正常、工具失败、非法参数、达到上限；工具开始访问用户资源后加入越权与注入场景。
+- 固定 eval 场景：正常、工具失败、非法参数、达到上限、Provider 失败和取消。
 
-完成标准：Agent 能完成一次受控工具调用，失败和超限不会永久挂起，且回归场景可重复运行。
+完成标准：Agent 能完成受控工具调用，失败和超限不会永久挂起，回归场景可重复运行。
 
-### Phase 4：Trip 资源权限与持久化
+### Phase 5：RAG 知识检索
 
-- 当 `save_itinerary_item(trip_id, ...)` 一类工具出现时，建立最小 Trip / TripMember。
+- 建立小型旅行知识库：解析、分块、metadata、索引和 Top-K 检索。
+- 优先使用 PostgreSQL 全文检索 baseline；有明确语义检索需求后再引入 pgvector。
+- 将检索封装为 Tool，返回带来源的片段；无结果、超时和权限过滤有稳定行为。
+
+完成标准：固定 eval 集能检索正确资料，回答可追溯到来源，检索失败不会破坏 Agent 终止状态。
+
+### Phase 6：Conversation 持久化与长期记忆
+
+- 建立用户拥有的 Conversation / Message，支持历史读取和上下文预算。
+- 建立来源明确、可删除、可更新的 Memory；写入前遵守用户确认和敏感信息规则。
+- 跨用户访问返回 404，不泄露资源是否存在。
+
+完成标准：刷新后恢复会话；长期记忆按用户隔离；用户能查看、修正和删除记忆。
+
+### Phase 7：Trip、私有知识与写入工具
+
+- 当 `save_itinerary_item(trip_id, ...)` 和 Trip 私有 RAG 出现时，建立最小 Trip / TripMember。
 - 所有带 `trip_id` 的读取、写入和工具执行都在 Service 层验证当前用户成员权限。
-- 建立 Conversation / Message / AgentRun / ToolCall 的必要持久化。
 
-完成标准：伪造或跨用户 `trip_id` 无法操作资源，非成员访问不泄露资源是否存在；聊天与工具轨迹可以在刷新后读回。
+完成标准：伪造或跨用户 `trip_id` 无法操作资源；私有知识检索按 Trip 权限过滤；写入有确认和事务边界。
 
-### Phase 5：SSE
-
-- 自定义事件协议。
-- 流式文本、工具状态、取消和错误。
-- 前端 buffer 更新和重渲染分析。
-
-完成标准：慢流、取消、断网和错误都有明确 UI 状态，且不破坏 Agent 已有的终止语义。
-
-### Phase 6：文件上传
+### Phase 8：文件上传
 
 - MinIO、Presigned URL、进度和 Attachment。
 - PDF 文本提取作为后台任务。
 
 完成标准：上传不会经过 FastAPI 内存中转，失败可重试。
 
-### Phase 7：WebSocket 协作
+### Phase 9：WebSocket 协作
 
 - Trip 房间、在线成员、投票和重连。
 
 完成标准：两个浏览器窗口可实时同步投票和在线状态。
 
-### Phase 8：工程与性能
+### Phase 10：工程与性能
 
 - 补齐测试和可观测性。
 - OpenAPI 类型生成。
 - 消息虚拟化、数据库索引和性能报告。
 
-### Phase 9：可选 SSR 专项
+### Phase 11：可选 SSR 专项
 
 为公开 Trip 分享页增加 Next.js 或 React Router SSR，学习 HTML streaming、hydration 和 SEO。不要在核心 MVP 尚未闭环时引入第二个服务端渲染框架。
 

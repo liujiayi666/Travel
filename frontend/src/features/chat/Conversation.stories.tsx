@@ -47,3 +47,17 @@ export const SessionError: Story = {
     },
   },
 };
+
+export const Sending: Story = {
+  args: {
+    messages: [{ role: "user", content: "Plan a quiet trip to Kyoto." }],
+    isSending: true,
+  },
+};
+
+export const SendError: Story = {
+  args: {
+    messages: [{ role: "user", content: "Plan a quiet trip to Kyoto." }],
+    sendError: "Language model request timed out",
+  },
+};

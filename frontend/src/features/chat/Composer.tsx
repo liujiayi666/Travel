@@ -9,7 +9,7 @@ export interface ComposerState {
 
 export interface ComposerActions {
   changeDraft: (draft: string) => void;
-  submit: () => void;
+  submit: (message: string) => void;
 }
 
 interface ComposerProps {
@@ -27,7 +27,7 @@ export const Composer = ({ state, actions }: ComposerProps) => {
         className={styles.composer}
         onSubmit={(event) => {
           event.preventDefault();
-          actions.submit();
+          actions.submit(state.draft);
         }}
       >
         <button type="button" aria-label="Add context">
@@ -38,12 +38,16 @@ export const Composer = ({ state, actions }: ComposerProps) => {
           name="tripPrompt"
           aria-label="Describe your trip"
           placeholder="Planning your trip…"
+          maxLength={4000}
+          disabled={state.phase === "sending"}
           value={state.draft}
           onChange={(event) => actions.changeDraft(event.target.value)}
         />
         <button
           type="submit"
-          aria-label="Start planning"
+          aria-label={
+            state.phase === "sending" ? "Sending message" : "Start planning"
+          }
           disabled={submitDisabled}
         >
           ↑

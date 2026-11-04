@@ -32,6 +32,7 @@
 | 4 | 2026-10-27 | 完成 Cookie Session Route、统一错误映射与 Origin 校验 |
 | 5 | 2026-10-28 | 完成公共 App Shell、Chat 动作级认证弹框与按会话隔离的草稿状态 |
 | 6 | 2026-10-29 | 路线调整：先打通单轮 Chat 与 Provider，再加入只读工具和资源权限 |
+| 7 | 2026-11-03 | 路线重排：先完成可用文本对话与多轮上下文，再进入流式、Tool、Agent Loop、RAG 和长期记忆 |
 
 ## 易错本
 
@@ -177,56 +178,89 @@
 - 学到：动态键的查找表应使用 `Map` 或 null-prototype object；外部 URL 参数还要先经过 allowlist / schema 边界，不能把“是字符串”误当成“是合法资源 ID”
 - 面试向：公共 App Shell 配合动作级认证拦截，可以在不牺牲匿名浏览的前提下建立登录入口；草稿由按 `chatId` 索引的 Provider 管理，认证状态与纯 UI Composer 解耦，并通过浏览器行为测试和状态迁移测试验证
 
-### A6 非流式单轮 Chat 最小纵向切片 — 下一步
+### A6 单轮非流式 Chat 端到端闭环 — 进行中
 
-- 训练能力：LLM Provider 边界。业务 Service 只依赖应用自己的请求、响应和错误类型，不依赖 DeepSeek / GLM 的 SDK 或原始事件；使用 fake provider 可在无网络、无真实密钥时稳定测试失败。
-- 目标：实现 `POST /api/chat`，接收一条已认证用户消息并返回完整答案；Route 只处理 HTTP，Chat Service 调用 Provider，DeepSeek 从 `base_url`、`model`、API Key 环境配置创建；现有 Chat UI 接入应用自己的 `/api` 并展示结果
-- 接口契约：请求只包含用户愿意发送的消息文本，响应只包含应用定义的答案结构；不接受客户端传入 `user_id`、模型名或供应商密钥；写请求继续检查 trusted Origin
-- 明确不做：不建 Trip / TripMember、不保存 Message、不做多轮历史、不调用工具、不做 SSE 流式输出
-- 验收：未登录返回 401；空白或超长消息返回 422；fake provider 正常返回时 API 返回答案；Provider 超时和上游错误映射为稳定 HTTP 错误；浏览器可见一次完整问答，Network 证明前端只请求自己的 `/api`
-- 安全与证据：真实 Provider 仅做手工 smoke test，不进入默认测试；测试名称、冻结的 Provider fake 场景、实际错误状态码和浏览器 Network 均需记录；确认 API Key 不进入前端、响应或日志
-- 状态：待开始；进入后由 `/tutor` 先讲解 Provider 契约并给出 TODO 骨架
+- 训练能力：LLM Provider 边界与最小 HTTP 纵向切片。业务 Service 只依赖应用自己的请求、响应和错误类型；使用 fake provider 可在无网络、无真实密钥时测试成功与失败。
+- 已完成：`POST /api/chat`、Provider 抽象、DeepSeek/GLM OpenAI 兼容适配、认证、Origin、输入校验、lifespan、稳定错误映射及 fake provider 自动化测试。
+- 待完成：配置一个当前账号确实可用的模型并完成一次真实成功调用；把现有 Chat UI 接到 `/api/chat`，展示用户消息、加载状态和助手回答。
+- 验收：浏览器可见一次真实一问一答，刷新后不要求保留历史；Network 证明前端只请求自己的 `/api`；API Key 不出现在前端、响应或日志
+- 明确不做：多轮历史、数据库 Message、工具调用和流式输出
 
-### A7 单只读工具调用闭环 — 后续
+### A7 会话内多轮上下文 — 后续
 
-- 训练能力：Tool contract。让模型提出结构化工具调用，应用后端独立校验工具名与参数，执行后把结构化结果交还模型生成最终答案。
-- 首个工具：`get_weather(destination, date_range)`；此时不访问用户私有资源，因此暂不需要 Trip 权限。
-- 验收：模型选择直接回答与选择工具都由 fake provider 可重复验证；未知工具、缺失/伪造参数、工具超时和工具失败都有稳定结果；真实 smoke test 证明一次天气问答闭环。
-- 明确不做：暂不实现任意多步循环、工具并行调用或持久化 ToolCall trace。
+- 训练能力：理解 LLM API 无状态，上下文必须由应用保存并按预算重新提交。前端持有当前会话历史，后端每次把 system、历史 user/assistant 消息和最新 user 消息传给 Provider。
+- 接口演进：`POST /api/chat` 从单条 `message` 演进为应用自己的 `messages` 列表；单轮就是长度为一的列表。客户端不能提交 system 角色，历史数量和总字符数必须受限。
+- 验收：第二次提问能正确引用第一轮内容；超长或超量历史有明确截断/拒绝策略；fake provider 能断言第二次调用收到正确上下文
+- 明确不做：数据库持久化、刷新恢复、工具调用和 SSE
 
-### A8 Agent Loop、限额、Trace 与 Eval — 后续
+### A8 SSE 流式文本 — 后续
 
-- 训练能力：受控循环与可观测性。明确最大步骤、总时长、token 上限、成功/失败/取消终止状态，任何路径都不能永久停在 running。
-- 验收：固定场景覆盖正常回答、正常工具调用、工具失败、非法参数、达到步骤上限；记录每轮耗时、工具名、状态、token 与失败原因；重复运行结果可判断通过或失败。
-- 明确不做：不为堆叠功能接入更多工具；先把循环可靠性证明清楚。
+- 训练能力：单向流式协议、增量渲染、取消和错误恢复。流式只改变传输方式，不改变 A7 的 Conversation 语义。
+- 验收：增量文本、正常结束、Provider 中途失败、用户取消和断线都有稳定状态；前端不解析供应商原始事件
+- 明确不做：工具状态流和多轮持久化
 
-### A9 Trip 资源权限与首个写入工具 — 后续
+### A9 Tool Contract 与单工具闭环 — 后续
 
-- 训练能力：服务端资源归属与成员权限。模型或用户传入的 `trip_id` 是不可信输入，必须由后端结合已认证用户查数据库确认成员关系。
-- 目标：建立最小 `Trip` / `TripMember`、创建与读取 API；在 `save_itinerary_item(trip_id, ...)` 前复用统一授权边界；Trip 与 owner membership 同事务提交
-- 验收：未认证 401；列表只返回成员可访问 Trip；非成员读取真实存在的 Trip 返回 404；伪造 `trip_id` 的工具调用无法写入；真实 PostgreSQL 覆盖列表隔离、越权拒绝和事务回滚
-- 明确不做：普通 Trip 表单、列表 UI 或完整 CRUD；关键学习点是 Agent 工具安全边界，不是页面数量
+- 训练能力：结构化工具调用。LLM 提出 `get_weather(destination, date_range)`，后端独立验证工具名与参数，执行后把结构化结果交还 LLM 生成最终文本。
+- 验收：直接回答和工具调用都可被 fake provider 复现；未知工具、非法参数、工具超时和工具失败都有稳定结果；真实 smoke test 证明一次天气问答闭环
+- 明确不做：任意多步循环、并行工具、长期记忆和私有资源写入
 
-### A10 持久化与 SSE 流式展示 — 后续
+### A10 Agent Loop、限额、Trace 与 Eval — 后续
 
-- 将稳定的 Chat、ToolCall 与必要 Run 结果持久化，再把非流式回答升级为 SSE。
-- 验收覆盖刷新后恢复、半途断流、取消、错误恢复与服务端取消上游请求；不破坏 A8 已建立的终止语义。
+- 训练能力：受控循环与可靠性。明确最大步骤、总时长、token/成本上限，以及 completed / failed / cancelled / max_steps_reached 等终止状态。
+- 验收：固定 eval 覆盖正常回答、正常工具调用、工具失败、非法参数、达到上限、Provider 失败和取消；记录 run/tool 轨迹、耗时、token 与失败原因
+- 明确不做：在核心循环可靠前继续堆叠工具
+
+### A11 RAG 知识检索工具 — 后续
+
+- 训练能力：检索增强生成与来源约束。建立一个小型旅行知识库，完成解析、分块、metadata、索引、Top-K 检索和带来源结果。
+- 首个实现优先使用 PostgreSQL 全文检索做 baseline；有明确语义检索需求和数据指标后再引入 pgvector，不先增加独立向量数据库。
+- 验收：固定问题能检索到正确片段；无结果时明确降级；回答带可追溯来源；检索超时/失败进入现有 Tool 错误边界；eval 检查检索命中与 groundedness
+- 明确不做：把所有聊天消息自动当知识库，或把 RAG 与长期用户记忆混为一谈
+
+### A12 Conversation 持久化 — 后续
+
+- 训练能力：把会话内上下文升级为服务端权威状态。建立 Conversation / Message、所有权检查和读取历史 API。
+- 验收：刷新和多设备可恢复；用户只能读取自己的 Conversation；历史读取有分页和上下文预算；数据库故障有稳定错误
+- 明确不做：长期偏好记忆
+
+### A13 长期记忆工具 — 后续
+
+- 训练能力：用户级长期记忆的写入、检索、更新、冲突和删除。记忆不是原始聊天日志，而是来源明确、可管理的稳定事实或偏好。
+- 验收：只有符合规则或经用户确认的事实写入；按 `user_id` 强制过滤；支持查看和删除；冲突有更新时间/确认策略；检索失败不影响普通聊天
+- 明确不做：未经用户同意自动保存敏感内容
+
+### A14 Trip 权限、私有知识与写入工具 — 后续
+
+- 训练能力：服务端资源归属与成员权限。模型或用户传入的 `trip_id` 是不可信输入，必须结合当前用户查数据库确认成员关系。
+- 目标：建立最小 Trip / TripMember；为 `save_itinerary_item(trip_id, ...)` 和 Trip 私有 RAG 复用统一授权边界；非成员行为不泄露资源是否存在。
+- 验收：未认证 401；非成员访问真实 Trip 返回 404；伪造 `trip_id` 的工具调用无法读取或写入；真实 PostgreSQL 覆盖列表隔离、越权拒绝和事务回滚
+- 明确不做：没有实际 Agent 工具需求的普通 Trip CRUD 页面
+
+### A15 文件、协作与工程化 — 后续
+
+- 附件上传、WebSocket 协作、性能、缓存、部署和可选 SSR。
+- 这些能力不得阻塞 Agent 核心主线。
 
 ## 下一步
 
-进入 A6：非流式单轮 Chat 最小纵向切片。先用 Provider 边界打通“用户输入 → 自己的 `/api` → Service → LLM → 答案”，暂不引入 Trip、数据库消息持久化、工具或流式协议。前端仍只消费应用自己的 `/api`，不得接触供应商密钥、原始 Provider 事件或 HttpOnly Session token。
+继续完成 A6：后端基础已通过自动化测试，但还没有一次真实 Provider 成功返回，浏览器也尚未提交 `/api/chat`。先用一个可用模型完成真实一问一答，再进入 A7 多轮上下文。前端仍只消费应用自己的 `/api`，不得接触供应商密钥、原始 Provider 事件或 HttpOnly Session token。
 
 后续顺序：
 
-1. A6：非流式单轮 Chat 最小纵向切片
-2. A7：天气单工具调用闭环
-3. A8：Agent Loop、限额、Trace 与 Eval
-4. A9：Trip 资源权限与首个写入工具
-5. A10：持久化与 SSE 流式展示
-6. 文件上传、WebSocket 协作、工程化与性能专项
+1. A6：单轮非流式 Chat 端到端闭环
+2. A7：会话内多轮上下文
+3. A8：SSE 流式文本
+4. A9：Tool Contract 与天气单工具闭环
+5. A10：Agent Loop、限额、Trace 与 Eval
+6. A11：RAG 知识检索工具
+7. A12：Conversation 持久化
+8. A13：长期记忆工具
+9. A14：Trip 权限、私有知识与写入工具
+10. A15：文件、协作与工程化
 
-Agent 核心能力不延后到文件上传和协作功能之后。每个 A6–A10 步骤在开始前由 /tutor 补充具体目标、验收和证据要求。
+Agent 核心能力不延后到文件上传和协作功能之后。每个 A6–A15 步骤在开始前由 /tutor 补充具体目标、验收和证据要求；验收通过后才更新为完成。
 
 测试环境 TODO（后续学习）：评估 nox/tox 或 Makefile 等统一入口，区分 unit / integration-local / integration-CI / e2e 的依赖与数据库配置；生产数据库永远不参与测试。
 
-准备：注册 platform.deepseek.com 拿 API Key（`sk-` 开头），A6 接入 LLM 前放进 `backend/.env`。真实 Provider 只用于手工 smoke test；自动化测试使用 fake provider。
+准备：确认当前 DeepSeek / GLM 账号中实际可用的模型 ID，并把对应 API Key 放进 `backend/.env`。真实 Provider 只用于手工 smoke test；自动化测试使用 fake provider。
