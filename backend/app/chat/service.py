@@ -2,7 +2,6 @@ from app.llm.contracts import (
     LlmAssistantMessage,
     LlmProvider,
     LlmRequest,
-    LlmResponse,
 )
 
 
