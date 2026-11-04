@@ -7,7 +7,7 @@ from app.llm.contracts import (
     LlmRequest,
     LlmResponse,
 )
-from app.llm.errors import LlmProviderError, LlmTimeoutError
+from app.llm.errors import LlmInvalidRequestError, LlmProviderError, LlmTimeoutError
 
 
 class OpenAICompatibleProvider:
@@ -18,7 +18,7 @@ class OpenAICompatibleProvider:
 
     async def complete(self, request: LlmRequest) -> LlmResponse:
         if not request.messages:
-            raise LlmProviderError("Language model request has no messages")
+            raise LlmInvalidRequestError("Language model request has no messages")
         messages = [to_sdk_message(message) for message in request.messages]
 
         try:
@@ -59,4 +59,4 @@ def to_sdk_message(message: LlmMessage) -> ChatCompletionMessageParam:
                 "content": message.content,
             }
         case _:
-            raise ValueError(f"Unsupported message role: {message.role}")
+            raise LlmInvalidRequestError(f"Unsupported message role: {message.role}")

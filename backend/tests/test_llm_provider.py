@@ -6,7 +6,7 @@ import pytest
 from openai import APIError, APITimeoutError, AsyncOpenAI
 
 from app.llm.contracts import LlmAssistantMessage, LlmMessage, LlmRequest
-from app.llm.errors import LlmProviderError, LlmTimeoutError
+from app.llm.errors import LlmInvalidRequestError, LlmProviderError, LlmTimeoutError
 from app.llm.openai_compatible_provider import (
     OpenAICompatibleProvider,
     to_sdk_message,
@@ -72,7 +72,7 @@ async def test_provider_rejects_empty_messages() -> None:
     client, create = make_client(make_completion("unused"))
     provider = make_provider(client)
 
-    with pytest.raises(LlmProviderError, match="no messages"):
+    with pytest.raises(LlmInvalidRequestError, match="no messages"):
         await provider.complete(LlmRequest(messages=[]))
 
     create.assert_not_awaited()
@@ -105,6 +105,13 @@ def test_provider_maps_supported_message_roles(role: str) -> None:
         "role": role,
         "content": "hello",
     }
+
+
+def test_provider_rejects_invalid_message_roles() -> None:
+    message = LlmMessage.model_construct(role="tool", content="hello")
+
+    with pytest.raises(LlmInvalidRequestError, match="Unsupported message role"):
+        to_sdk_message(message)
 
 
 @pytest.mark.anyio

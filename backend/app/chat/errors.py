@@ -4,6 +4,7 @@ from fastapi import FastAPI, Request, status
 from fastapi.responses import JSONResponse
 
 from app.llm.errors import (
+    LlmInvalidRequestError,
     LlmNotConfiguredError,
     LlmProviderError,
     LlmTimeoutError,
@@ -13,6 +14,27 @@ logger = logging.getLogger(__name__)
 
 
 def install_chat_error_handlers(app: FastAPI) -> None:
+    @app.exception_handler(LlmInvalidRequestError)
+    async def llm_invalid_request_error_handler(
+        request: Request,
+        exc: LlmInvalidRequestError,
+    ) -> JSONResponse:
+        logger.error(
+            "Invalid internal LLM request",
+            extra={
+                "error_code": "internal_error",
+                "path": request.url.path,
+            },
+            exc_info=exc,
+        )
+        return JSONResponse(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            content={
+                "code": "internal_error",
+                "detail": "Internal server error",
+            },
+        )
+
     @app.exception_handler(LlmProviderError)
     async def llm_provider_error_handler(
         request: Request,
