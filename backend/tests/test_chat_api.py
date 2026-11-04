@@ -14,7 +14,12 @@ from app.llm.contracts import (
     LlmRequest,
     LlmResponse,
 )
-from app.llm.errors import LlmNotConfiguredError, LlmProviderError, LlmTimeoutError
+from app.llm.errors import (
+    LlmInvalidRequestError,
+    LlmNotConfiguredError,
+    LlmProviderError,
+    LlmTimeoutError,
+)
 from app.main import create_app
 
 
@@ -184,3 +189,16 @@ def test_chat_maps_provider_failures(
     assert response.status_code == status_code
     assert response.json()["code"] == error_code
     assert isinstance(response.json()["detail"], str)
+
+
+def test_chat_maps_internal_llm_request_errors_to_500() -> None:
+    provider = FakeProvider(error=LlmInvalidRequestError("Language model request has no messages"))
+    client, _ = make_client(provider)
+
+    response = post_chat(client, make_payload())
+
+    assert response.status_code == 500
+    assert response.json() == {
+        "code": "internal_error",
+        "detail": "Internal server error",
+    }
