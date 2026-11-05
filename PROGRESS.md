@@ -36,6 +36,7 @@
 | 8 | 2026-11-04 | 路线调整：前端只拉取和展示历史；后端持久化 Conversation 并在调用 LLM 前组装有预算的上下文，随后再做 SSE |
 | 9 | 2026-11-04 | 完成 A6 单轮 Chat 端到端闭环验收，并明确 Provider 内部请求错误与上游错误的边界 |
 | 10 | 2026-11-04 | 完成 A7.1 Conversation / Message 持久化模型、约束、索引与级联测试 |
+| 11 | 2026-11-05 | 完成 A7.2 Conversation 列表与 Message 最近一页读取 API，验证服务端所有权过滤和稳定顺序 |
 
 ## 易错本
 
@@ -82,6 +83,10 @@
 - 只为副作用存在的模型 import 会被 Ruff `F401 --fix` 删除；集中模型注册入口需要明确 `# noqa: F401`
 - PostgreSQL `now()` 在同一事务内返回相同事务时间；需要严格消息顺序时应显式写入递增时间，或增加独立 sequence 字段
 - 数据库外键负责完整性和级联删除，ORM relationship 只负责对象导航；没有对象导航需求时可暂不添加 relationship，避免跨模块 mapper 加载耦合
+- `get_current_user` 只证明登录身份；资源级授权必须把当前 `user_id` 放进查询条件，不能只按资源 ID 查询后再相信调用者
+- 路由不存在的 404 body 是 `{"detail":"Not Found"}`；业务资源不存在/非 owner 使用统一业务 404，不能把两种问题混为一谈
+- Pydantic Response DTO 的字段类型必须与 ORM 一致：UUID 不能写成 `int`，从 ORM 映射还需要 `from_attributes=True`
+- Query 的默认值必须满足自身约束，例如 `default=0, ge=1` 会让正常请求直接返回 422；参数边界和默认值要成对检查
 
 ## Phase 0 — 项目骨架（重写参考骨架）
 
@@ -220,11 +225,24 @@
 - 学到：`alembic check` 只能证明模型与数据库无明显 drift，不能证明 constraint 设计完整，也不能替代真实失败路径测试
 - 面试向：我用服务端权威模型、双层外键级联、数据库 CHECK 和复合索引建立 Conversation 基础，并通过真实 PostgreSQL 集成测试证明 role、空白内容和跨层级级联行为，而不是只验证建表成功
 
-#### A7.2 Conversation 列表与消息读取 API — 进行中
+#### A7.2 Conversation 列表与消息读取 API — ✓ 2026-11-05（commit 93d94ce、191d53e）
 
-- 训练能力：建立服务端所有权过滤和分页读取边界，前端只消费应用自己的只读 API。
-- 验收：Conversation 列表只返回当前用户的数据；消息按稳定时间顺序读取；跨用户 Conversation 统一返回 404；空列表和非 owner 有自动化测试。
-- 明确不做：发送消息、Provider 调用、上下文组装和 SSE
+- 验收通过：`GET /api/conversations` 和 `GET /api/conversations/{id}/messages` 已通过统一 router 注册；空列表和空 Conversation 返回 `200 []`
+- 验收通过：Conversation 列表只返回当前用户的数据，按 `updated_at DESC, id DESC` 排序；最近消息先降序 limit，再 reverse 为 old → new
+- 验收通过：跨用户和不存在 Conversation 返回相同业务 404；`limit` 越界返回 422；响应 DTO 不暴露 `user_id`
+- 可复查测试：`test_conversation_api_requires_authentication`、`test_list_conversations_returns_only_current_user_sorted_by_update`、`test_list_conversations_returns_empty_list`、`test_messages_return_empty_list_for_owned_empty_conversation`、`test_messages_return_latest_page_in_chronological_order`、`test_messages_hide_foreign_and_unknown_conversations`、`test_conversation_api_rejects_invalid_limit`
+- 验收通过：后端 73 passed、前端 23 passed；Ruff、Oxlint、production build 全部通过
+- 关键代码：`app/conversations/router.py`、`schemas.py`、`service.py`、`errors.py`、`app/api/router.py`、`app/core/exception_handler.py`
+- 学到：认证回答“你是谁”，ownership 查询回答“你能不能访问这个资源”；两者必须同时存在
+- 学到：先获取最近 N 条再 reverse，兼顾固定 query budget 和最终 chronological display
+- 学到：HTTP 404 要区分路由不存在与业务资源不存在；Response DTO 是 ORM 到公开 API 的白名单
+- 面试向：我用 owner-scoped SQL、有界最近页查询、UUID Response DTO、统一 404 和 HTTP 集成测试建立 Conversation 读取边界，并验证跨用户访问不会泄露资源存在性或聊天内容
+
+#### A7.3 发送消息与服务端上下文组装 — 进行中
+
+- 训练能力：后端拥有 Conversation 历史和 LLM 上下文来源；发送时只接受当前 content，在 Service 内完成所有权、历史读取、预算、system prompt 组装和 Provider 调用。
+- 验收：第二轮请求能引用第一轮；跨用户发送 404；客户端无法提交 history/system/model；历史条数和字符数有硬上限；Provider 请求由 fake provider 断言。
+- 明确不做：LLM 总结压缩、Tool 调用和 SSE
 
 ### A8 SSE 流式文本 — 后续
 
@@ -277,24 +295,25 @@
 
 ## 下一步
 
-进入 A7.2：实现 Conversation 列表和 Message 历史只读 API。所有查询必须在数据库中同时按资源 ID 与当前 `user_id` 过滤；读取顺序和 limit 由服务端固定。
+进入 A7.3：实现 `POST /api/conversations/{id}/messages`。Route 只接收当前 user content；Service 负责 Conversation ownership、读取有界历史、组装 Provider 请求、调用 LLM，并在事务边界内保存 user/assistant 消息。
 
 后续顺序：
 
 1. A6：单轮非流式 Chat 端到端闭环 — ✓
 2. A7.1：Conversation / Message 持久化模型 — ✓
-3. A7.2：Conversation 列表与消息读取 API — 进行中
-4. A8：SSE 流式文本
-5. A9：Tool Contract 与天气单工具闭环
-6. A10：Agent Loop、限额、Trace 与 Eval
-7. A11：RAG 知识检索工具
-8. A12：Conversation 历史治理与高级压缩
-9. A13：长期记忆工具
-10. A14：Trip 权限、私有知识与写入工具
-11. A15：文件、协作与工程化
+3. A7.2：Conversation 列表与消息读取 API — ✓
+4. A7.3：发送消息与服务端上下文组装 — 进行中
+5. A8：SSE 流式文本
+6. A9：Tool Contract 与天气单工具闭环
+7. A10：Agent Loop、限额、Trace 与 Eval
+8. A11：RAG 知识检索工具
+9. A12：Conversation 历史治理与高级压缩
+10. A13：长期记忆工具
+11. A14：Trip 权限、私有知识与写入工具
+12. A15：文件、协作与工程化
 
 Agent 核心能力不延后到文件上传和协作功能之后。每个 A6–A15 步骤在开始前由 /tutor 补充具体目标、验收和证据要求；验收通过后才更新为完成。
 
 测试环境 TODO（后续学习）：在现有本地 hooks 基础上补 GitHub Actions，区分 unit / integration / e2e 的依赖与数据库配置；生产数据库永远不参与测试。
 
-准备：A7.2 由用户先定义列表和历史读取的查询边界，再手写 Service 查询；Route 只负责认证、HTTP 参数与响应映射。
+准备：A7.3 由用户先定义上下文预算和消息持久化事务边界；Route 只负责认证、HTTP 参数与响应映射。

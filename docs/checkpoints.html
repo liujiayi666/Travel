@@ -185,6 +185,17 @@
       </ul>
       <blockquote>数据库 schema 的可靠性来自模型、可审查 migration、真实约束和失败路径测试四者一致，而不是把 autogenerate 的输出当成最终答案。</blockquote>
     </article>
+    <article class="cp">
+      <header><span class="id">93d94ce · 191d53e</span><time>2026-11-05</time><h2>A7.2 Conversation 与 Message 读取 API</h2></header>
+      <ul>
+        <li>认证只证明调用者身份，资源授权必须把 <code>conversation_id + current_user_id</code> 放进数据库查询</li>
+        <li>Conversation 列表按更新时间倒序；消息先查询最近 N 条，再 reverse 成 old → new，兼顾 query budget 和展示顺序</li>
+        <li>不存在与非 owner 使用完全相同的业务 404；路由不存在与资源不存在通过响应内容区分</li>
+        <li>Response DTO 使用 UUID 类型与 <code>from_attributes=True</code>，只暴露公开字段，不返回 <code>user_id</code></li>
+        <li>HTTP 集成测试覆盖 401、空列表、用户隔离、消息顺序、跨用户 404 和 limit 422</li>
+      </ul>
+      <blockquote>把认证、资源所有权、稳定读取顺序和响应字段白名单分别放在正确边界，才能让后续 Agent 上下文读取既安全又可预测。</blockquote>
+    </article>
   </div>
 </div>
 </body>
