@@ -196,6 +196,17 @@
       </ul>
       <blockquote>把认证、资源所有权、稳定读取顺序和响应字段白名单分别放在正确边界，才能让后续 Agent 上下文读取既安全又可预测。</blockquote>
     </article>
+    <article class="cp">
+      <header><span class="id">05945c1 · 4dcb2e7</span><time>2026-11-06</time><h2>A7.3 Conversation 创建 API</h2></header>
+      <ul>
+        <li>Conversation 创建请求携带首条 <code>message</code>，服务端只用它生成不超过 50 字符的 title；该请求不调用 Provider，也不保存 Message</li>
+        <li>title 是 Conversation 元数据，因此在 Conversation 创建边界内确定；Message Service 不再通过“历史是否为空”判断首轮或修改 title</li>
+        <li>首条与后续消息统一走 <code>POST /api/conversations/{id}/messages</code>，Service 统一处理 ownership、历史预算与 Provider 调用</li>
+        <li>首条消息返回 502 时 Conversation 已保留，但本轮 user/assistant Message 均未提交；前端提示重试并复用同一 conversationId</li>
+        <li>HTTP 集成测试覆盖 title 截断、创建不调用 Provider、401、Origin 403、伪造字段 422、跨用户 404 和 Provider 失败无半轮数据</li>
+      </ul>
+      <blockquote>把资源创建与消息发送拆成两个职责明确的写边界，用事务、确定性元数据和失败路径测试保证 title、Conversation 与 Message 不会因隐式副作用互相污染。</blockquote>
+    </article>
   </div>
 </div>
 </body>
