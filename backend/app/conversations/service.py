@@ -152,9 +152,13 @@ async def create_conversation(
     session: AsyncSession,
     *,
     user_id: uuid.UUID,
+    message: str,
 ) -> Conversation:
-    """Create an empty conversation owned by the current user."""
-    conversation = Conversation(user_id=user_id, title=DEFAULT_CONVERSATION_TITLE)
+    """Create a conversation titled from the message supplied by the client."""
+    conversation = Conversation(
+        user_id=user_id,
+        title=build_conversation_title(message),
+    )
     session.add(conversation)
     try:
         await session.commit()
@@ -188,8 +192,6 @@ async def send_message(
         conversation_id=conversation_id,
         limit=settings.chat_context_max_messages,
     )
-    if not history:
-        conversation.title = build_conversation_title(content)
     reply = await answer_message(
         provider,
         request=LlmRequest(messages=build_context(history=history, content=content)),

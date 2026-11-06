@@ -9,6 +9,14 @@ from app.chat.schemas import MAX_TEXT_CHARS_PER_MESSAGE
 
 class ConversationCreateRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
+    message: str = Field(min_length=1, max_length=MAX_TEXT_CHARS_PER_MESSAGE)
+
+    @field_validator("message", mode="before")
+    @classmethod
+    def normalize_message(cls, value):
+        if isinstance(value, str):
+            return value.strip()
+        return value
 
 
 class SendMessageRequest(BaseModel):

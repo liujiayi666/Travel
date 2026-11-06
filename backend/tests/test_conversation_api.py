@@ -133,7 +133,9 @@ async def test_conversation_api_requires_authentication(
     path: str,
 ) -> None:
     async with make_client(session_factory, user_id=None) as client:
-        payload = {"content": FIRST_MESSAGE} if path.endswith("/messages") else {}
+        payload = (
+            {"content": FIRST_MESSAGE} if path.endswith("/messages") else {"message": FIRST_MESSAGE}
+        )
         response = await client.request(
             method,
             path,
@@ -286,7 +288,7 @@ async def test_create_conversation_returns_only_conversation_without_calling_pro
     async with make_client(session_factory, user_id=user_id, provider=provider) as client:
         create_response = await client.post(
             "/api/conversations",
-            json={},
+            json={"message": FIRST_MESSAGE},
             headers={"Origin": settings.frontend_origin},
         )
         list_response = await client.get("/api/conversations")
@@ -294,7 +296,7 @@ async def test_create_conversation_returns_only_conversation_without_calling_pro
     assert create_response.status_code == 201
     conversation = create_response.json()
     assert set(conversation) == {"id", "title", "created_at", "updated_at"}
-    assert conversation["title"] == "New conversation"
+    assert conversation["title"] == FIRST_MESSAGE
     assert list_response.status_code == 200
     assert [item["id"] for item in list_response.json()] == [conversation["id"]]
     assert provider.requests == []
@@ -312,7 +314,7 @@ async def test_send_first_message_supports_long_reply(
     async with make_client(session_factory, user_id=user_id, provider=provider) as client:
         create_response = await client.post(
             "/api/conversations",
-            json={},
+            json={"message": long_content},
             headers={"Origin": settings.frontend_origin},
         )
         conversation_id = create_response.json()["id"]
@@ -340,7 +342,7 @@ async def test_send_message_returns_only_new_assistant_reply(
     async with make_client(session_factory, user_id=user_id, provider=provider) as client:
         create_response = await client.post(
             "/api/conversations",
-            json={},
+            json={"message": FIRST_MESSAGE},
             headers={"Origin": settings.frontend_origin},
         )
         conversation_id = create_response.json()["id"]
@@ -396,7 +398,7 @@ async def test_conversation_writes_require_trusted_origin(
     async with make_client(session_factory, user_id=user_id, provider=provider) as client:
         create_response = await client.post(
             "/api/conversations",
-            json={},
+            json={"message": FIRST_MESSAGE},
             headers={"Origin": settings.frontend_origin},
         )
         conversation_id = create_response.json()["id"]
@@ -404,7 +406,7 @@ async def test_conversation_writes_require_trusted_origin(
 
         create_without_origin = await client.post(
             "/api/conversations",
-            json={},
+            json={"message": FIRST_MESSAGE},
             headers=headers,
         )
         send_without_origin = await client.post(
@@ -429,7 +431,7 @@ async def test_conversation_writes_reject_client_supplied_fields(
         forged_create = await client.post(
             "/api/conversations",
             json={
-                "content": FIRST_MESSAGE,
+                "message": FIRST_MESSAGE,
                 "user_id": str(uuid.uuid4()),
                 "model": "attacker-model",
             },
@@ -440,7 +442,7 @@ async def test_conversation_writes_reject_client_supplied_fields(
 
         create_response = await client.post(
             "/api/conversations",
-            json={},
+            json={"message": FIRST_MESSAGE},
             headers={"Origin": settings.frontend_origin},
         )
         conversation_id = create_response.json()["id"]
@@ -468,7 +470,7 @@ async def test_send_message_rejects_blank_content(
     async with make_client(session_factory, user_id=user_id, provider=provider) as client:
         create_response = await client.post(
             "/api/conversations",
-            json={},
+            json={"message": FIRST_MESSAGE},
             headers={"Origin": settings.frontend_origin},
         )
         conversation_id = create_response.json()["id"]
@@ -517,7 +519,7 @@ async def test_first_message_provider_failure_leaves_no_partial_exchange(
     async with make_client(session_factory, user_id=user_id, provider=provider) as client:
         create_response = await client.post(
             "/api/conversations",
-            json={},
+            json={"message": FIRST_MESSAGE},
             headers={"Origin": settings.frontend_origin},
         )
         conversation_id = create_response.json()["id"]
@@ -534,7 +536,7 @@ async def test_first_message_provider_failure_leaves_no_partial_exchange(
     assert response.status_code == 502
     assert create_response.status_code == 201
     assert history_response.json() == []
-    assert conversations_response.json()[0]["title"] == "New conversation"
+    assert conversations_response.json()[0]["title"] == FIRST_MESSAGE
 
 
 @pytest.mark.anyio
@@ -547,7 +549,7 @@ async def test_send_message_provider_failure_leaves_history_unchanged(
     async with make_client(session_factory, user_id=user_id, provider=provider) as client:
         create_response = await client.post(
             "/api/conversations",
-            json={},
+            json={"message": FIRST_MESSAGE},
             headers={"Origin": settings.frontend_origin},
         )
         conversation_id = create_response.json()["id"]
@@ -588,7 +590,7 @@ async def test_send_message_uses_bounded_recent_history(
     async with make_client(session_factory, user_id=user_id, provider=provider) as client:
         create_response = await client.post(
             "/api/conversations",
-            json={},
+            json={"message": FIRST_MESSAGE},
             headers={"Origin": settings.frontend_origin},
         )
         conversation_id = create_response.json()["id"]

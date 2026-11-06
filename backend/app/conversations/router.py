@@ -77,6 +77,7 @@ async def create_new_conversation(
     return await create_conversation(
         session,
         user_id=user.id,
+        message=payload.message,
     )
 
 
