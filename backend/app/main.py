@@ -3,12 +3,10 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 
-from app.auth.errors import install_auth_error_handlers
-from app.auth.router import router as auth_router
-from app.chat.errors import install_chat_error_handlers
-from app.chat.router import router as chat_router
+from app.api.router import register_routers
 from app.core.config import settings
 from app.core.db import check_database
+from app.core.exception_handler import register_exception_handlers
 from app.llm.dependencies import create_llm_runtime
 
 
@@ -34,11 +32,8 @@ def create_app() -> FastAPI:
     app.state.llm_provider = None
     app.state.llm_client = None
 
-    install_auth_error_handlers(app)
-    install_chat_error_handlers(app)
-
-    app.include_router(auth_router)
-    app.include_router(chat_router)
+    register_exception_handlers(app)
+    register_routers(app)
 
     @app.get("/healthz")
     @app.get("/api/healthz")

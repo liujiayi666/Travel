@@ -174,6 +174,39 @@
       </ul>
       <blockquote>用内部 DTO 和 Provider 协议隔离供应商，用明确的 HTTP 错误边界暴露可观测状态，再用真实调用与 fake adapter 分别验证集成漂移和失败路径。</blockquote>
     </article>
+    <article class="cp">
+      <header><span class="id">cf1618b</span><time>2026-11-04</time><h2>A7.1 Conversation / Message 持久化模型</h2></header>
+      <ul>
+        <li>Conversation 持有 <code>user_id</code>；Message 通过 <code>conversation_id</code> 间接归属，避免双重所有权来源</li>
+        <li>User → Conversation → Message 使用两层 <code>ON DELETE CASCADE</code>，数据库保证引用完整性和清理</li>
+        <li>CHECK 约束阻止非法 role、空白 title/content；<code>alembic check</code> 不能可靠检测这些约束，必须人工维护 migration</li>
+        <li>复合索引 <code>(conversation_id, created_at, id)</code> 支持历史过滤、排序、limit 和稳定 tie-break；同事务时间相同问题留给 Service 显式排序时间解决</li>
+        <li>真实 PostgreSQL 测试覆盖正常消息、非法 role、空白字段和 User 删除后的两层级联</li>
+      </ul>
+      <blockquote>数据库 schema 的可靠性来自模型、可审查 migration、真实约束和失败路径测试四者一致，而不是把 autogenerate 的输出当成最终答案。</blockquote>
+    </article>
+    <article class="cp">
+      <header><span class="id">93d94ce · 191d53e</span><time>2026-11-05</time><h2>A7.2 Conversation 与 Message 读取 API</h2></header>
+      <ul>
+        <li>认证只证明调用者身份，资源授权必须把 <code>conversation_id + current_user_id</code> 放进数据库查询</li>
+        <li>Conversation 列表按更新时间倒序；消息先查询最近 N 条，再 reverse 成 old → new，兼顾 query budget 和展示顺序</li>
+        <li>不存在与非 owner 使用完全相同的业务 404；路由不存在与资源不存在通过响应内容区分</li>
+        <li>Response DTO 使用 UUID 类型与 <code>from_attributes=True</code>，只暴露公开字段，不返回 <code>user_id</code></li>
+        <li>HTTP 集成测试覆盖 401、空列表、用户隔离、消息顺序、跨用户 404 和 limit 422</li>
+      </ul>
+      <blockquote>把认证、资源所有权、稳定读取顺序和响应字段白名单分别放在正确边界，才能让后续 Agent 上下文读取既安全又可预测。</blockquote>
+    </article>
+    <article class="cp">
+      <header><span class="id">05945c1 · 4dcb2e7</span><time>2026-11-06</time><h2>A7.3 Conversation 创建 API</h2></header>
+      <ul>
+        <li>Conversation 创建请求携带首条 <code>message</code>，服务端只用它生成不超过 50 字符的 title；该请求不调用 Provider，也不保存 Message</li>
+        <li>title 是 Conversation 元数据，因此在 Conversation 创建边界内确定；Message Service 不再通过“历史是否为空”判断首轮或修改 title</li>
+        <li>首条与后续消息统一走 <code>POST /api/conversations/{id}/messages</code>，Service 统一处理 ownership、历史预算与 Provider 调用</li>
+        <li>首条消息返回 502 时 Conversation 已保留，但本轮 user/assistant Message 均未提交；前端提示重试并复用同一 conversationId</li>
+        <li>HTTP 集成测试覆盖 title 截断、创建不调用 Provider、401、Origin 403、伪造字段 422、跨用户 404 和 Provider 失败无半轮数据</li>
+      </ul>
+      <blockquote>把资源创建与消息发送拆成两个职责明确的写边界，用事务、确定性元数据和失败路径测试保证 title、Conversation 与 Message 不会因隐式副作用互相污染。</blockquote>
+    </article>
   </div>
 </div>
 </body>

@@ -1,11 +1,17 @@
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
-from app.auth.service import (
-    EmailAlreadyRegisteredError,
-    InvalidCredentialsError,
-    InvalidSessionError,
-)
+
+class EmailAlreadyRegisteredError(Exception):
+    pass
+
+
+class InvalidCredentialsError(Exception):
+    pass
+
+
+class InvalidSessionError(Exception):
+    pass
 
 
 def install_auth_error_handlers(app: FastAPI) -> None:

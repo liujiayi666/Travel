@@ -35,6 +35,10 @@
 | 7 | 2026-11-03 | 路线重排：先完成可用文本对话与多轮上下文，再进入流式、Tool、Agent Loop、RAG 和长期记忆 |
 | 8 | 2026-11-04 | 路线调整：前端只拉取和展示历史；后端持久化 Conversation 并在调用 LLM 前组装有预算的上下文，随后再做 SSE |
 | 9 | 2026-11-04 | 完成 A6 单轮 Chat 端到端闭环验收，并明确 Provider 内部请求错误与上游错误的边界 |
+| 10 | 2026-11-04 | 完成 A7.1 Conversation / Message 持久化模型、约束、索引与级联测试 |
+| 11 | 2026-11-05 | 完成 A7.2 Conversation 列表与 Message 最近一页读取 API，验证服务端所有权过滤和稳定顺序 |
+| 12 | 2026-11-05 | 路线修正：A7.3 Conversation 创建 → A7.4 前端真实列表/New Chat/历史 → A7.5 消息发送与服务端上下文 |
+| 13 | 2026-11-06 | 完成 A7.3 Conversation 创建 API，明确 title 属于 Conversation、Message 不判断首轮也不修改 title |
 
 ## 易错本
 
@@ -77,6 +81,15 @@
 - API 边界错误要先分层：客户端 Schema 不符是 422，内部构造出非法 LLM 请求是 500，Provider 未配置是 503，上游调用或响应异常是 502，等待 Provider 超时是 504
 - 密钥不提交 Git 只是最低要求；浏览器代码、响应、日志和工作区都对使用者和调试工具可见，API Key 只能由后端运行环境读取
 - 模块级可变 history 会跨用户和并发请求共享，即使测试里能 mock 也不能作为会话存储；Conversation 必须使用请求级查询和所有权过滤
+- Alembic autogenerate 只生成差异草稿，不能可靠检测 CheckConstraint、trigger、view 或数据迁移；生成后必须人工补全并验证 upgrade/downgrade
+- 只为副作用存在的模型 import 会被 Ruff `F401 --fix` 删除；集中模型注册入口需要明确 `# noqa: F401`
+- PostgreSQL `now()` 在同一事务内返回相同事务时间；需要严格消息顺序时应显式写入递增时间，或增加独立 sequence 字段
+- 数据库外键负责完整性和级联删除，ORM relationship 只负责对象导航；没有对象导航需求时可暂不添加 relationship，避免跨模块 mapper 加载耦合
+- `get_current_user` 只证明登录身份；资源级授权必须把当前 `user_id` 放进查询条件，不能只按资源 ID 查询后再相信调用者
+- 路由不存在的 404 body 是 `{"detail":"Not Found"}`；业务资源不存在/非 owner 使用统一业务 404，不能把两种问题混为一谈
+- Pydantic Response DTO 的字段类型必须与 ORM 一致：UUID 不能写成 `int`，从 ORM 映射还需要 `from_attributes=True`
+- Query 的默认值必须满足自身约束，例如 `default=0, ge=1` 会让正常请求直接返回 422；参数边界和默认值要成对检查
+- 不要让 Message Service 通过“历史是否为空”判断首轮并顺便修改 Conversation.title；title 是 Conversation 元数据，应由 Conversation 创建请求中的首条 message 生成，Message 只负责发送与保存本轮消息
 
 ## Phase 0 — 项目骨架（重写参考骨架）
 
@@ -204,6 +217,66 @@
 - 验收：刷新和多设备可恢复同一 Conversation；第二次提问能正确引用第一轮内容；跨用户读取或发送统一返回 404；fake provider 能断言第二次调用收到服务端组装的有界上下文；超长或超量历史有明确预算策略。
 - 明确不做：LLM 总结压缩、向量检索、跨 Conversation 长期记忆、工具调用和 SSE
 
+#### A7.1 Conversation / Message 持久化模型 — ✓ 2026-11-04（commit cf1618b）
+
+- 验收通过：`alembic current` 为 `7729534e9371 (head)`；`alembic check` 无待生成操作；开发库实际存在两张表、两层 CASCADE、三条 CheckConstraint 和两个复合索引
+- 可复查测试：`test_conversation_persists_user_and_assistant_messages`、`test_message_rejects_invalid_role`、`test_conversation_rejects_blank_title`、`test_message_rejects_blank_content`、`test_deleting_user_cascades_conversation_and_messages`
+- 验收通过：后端 56 passed、前端 23 passed；Ruff、Oxlint、production build 以及 `check.sh full` 通过
+- 关键代码：`backend/app/conversations/models.py`、两份 Alembic migration、`backend/app/models.py`、`backend/tests/test_conversation_models.py`
+- 学到：所有权只存 Conversation，Message 经 `conversation_id` 间接归属；数据库外键负责完整性和级联，relationship 只负责对象导航
+- 学到：复合索引按 `(conversation_id, created_at, id)` 支持过滤、排序、限量读取和稳定 tie-break
+- 学到：`alembic check` 只能证明模型与数据库无明显 drift，不能证明 constraint 设计完整，也不能替代真实失败路径测试
+- 面试向：我用服务端权威模型、双层外键级联、数据库 CHECK 和复合索引建立 Conversation 基础，并通过真实 PostgreSQL 集成测试证明 role、空白内容和跨层级级联行为，而不是只验证建表成功
+
+#### A7.2 Conversation 列表与消息读取 API — ✓ 2026-11-05（commit 93d94ce、191d53e）
+
+- 验收通过：`GET /api/conversations` 和 `GET /api/conversations/{id}/messages` 已通过统一 router 注册；空列表和空 Conversation 返回 `200 []`
+- 验收通过：Conversation 列表只返回当前用户的数据，按 `updated_at DESC, id DESC` 排序；最近消息先降序 limit，再 reverse 为 old → new
+- 验收通过：跨用户和不存在 Conversation 返回相同业务 404；`limit` 越界返回 422；响应 DTO 不暴露 `user_id`
+- 可复查测试：`test_conversation_api_requires_authentication`、`test_list_conversations_returns_only_current_user_sorted_by_update`、`test_list_conversations_returns_empty_list`、`test_messages_return_empty_list_for_owned_empty_conversation`、`test_messages_return_latest_page_in_chronological_order`、`test_messages_hide_foreign_and_unknown_conversations`、`test_conversation_api_rejects_invalid_limit`
+- 验收通过：后端 73 passed、前端 23 passed；Ruff、Oxlint、production build 全部通过
+- 关键代码：`app/conversations/router.py`、`schemas.py`、`service.py`、`errors.py`、`app/api/router.py`、`app/core/exception_handler.py`
+- 学到：认证回答“你是谁”，ownership 查询回答“你能不能访问这个资源”；两者必须同时存在
+- 学到：先获取最近 N 条再 reverse，兼顾固定 query budget 和最终 chronological display
+- 学到：HTTP 404 要区分路由不存在与业务资源不存在；Response DTO 是 ORM 到公开 API 的白名单
+- 面试向：我用 owner-scoped SQL、有界最近页查询、UUID Response DTO、统一 404 和 HTTP 集成测试建立 Conversation 读取边界，并验证跨用户访问不会泄露资源存在性或聊天内容
+
+#### A7.3 Conversation 创建 API — ✓ 2026-11-06（commit 05945c1、4dcb2e7）
+
+- 训练能力：让真实用户从零创建自己拥有的 ConversationResource，明确 Conversation 只负责资源生命周期，不负责发送消息。
+- 接口：`POST /api/conversations` 接受严格 `message` 请求 DTO（`extra="forbid"`）；Owner 来自当前 Session 用户，服务端使用该 `message` 生成不超过 50 字符的初始 title，但不把它保存为 Message。成功返回 `201 + ConversationResponse`，不调用 Provider。
+- 验收通过：创建后立即出现在 GET 列表；数据库 owner 与当前用户一致；title 来自请求 message 并规范化、截断；首条和后续 Message 都由同一 Message API 发送，Message Service 不修改 title
+- 验收通过：Provider 在 Conversation 创建阶段调用次数为 0；首条消息 Provider 失败返回 502，Conversation 保留但 user/assistant Message 均不落库；前端可复用同一 Conversation ID 重试
+- 验收通过：未认证 401；缺少 trusted Origin 403；伪造 user ID/model/title、空白 message 等输入 422；跨用户发送统一 404
+- 可复查测试：`test_create_conversation_returns_only_conversation_without_calling_provider`、`test_build_conversation_title_uses_first_message_content`、`test_send_message_returns_only_new_assistant_reply`、`test_first_message_provider_failure_leaves_no_partial_exchange`、`test_conversation_writes_require_trusted_origin`、`test_conversation_writes_reject_client_supplied_fields`、`test_send_message_hides_foreign_conversation_before_provider_call`
+- 验收通过：后端 89 passed、前端 23 passed；Ruff、Oxlint、production build 和 `alembic check` 通过
+- 关键代码：`backend/app/conversations/router.py`、`schemas.py`、`service.py`、`backend/tests/test_conversation_api.py`、`test_conversation_service.py`
+- 明确不做：通过 Conversation API 发送消息、LLM 标题、客户端指定 owner/模型/system prompt、请求幂等
+- 学到：Conversation 创建和 Message 发送是两个资源职责；创建请求中的 message 只用于 Conversation.title，未保存为 Message
+- 学到：首条和后续消息共用 Message API，由 Service 统一处理 ownership、历史和上下文；不应通过历史空值分支偷偷修改另一个资源的元数据
+- 学到：首条消息 502 时 Conversation 已存在，但本轮消息未提交；前端应提示重试并复用同一 conversationId，避免重复创建会话
+- 面试向：我把 Conversation 元数据与 Message 发送边界拆开，用确定性 title、严格请求 DTO、owner-scoped 查询、事务化消息写入和失败路径测试证明创建与发送各自可重试且不互相污染
+
+#### A7.4 前端真实会话列表、New Chat 与历史加载 — 后续
+
+- 训练能力：前端只消费应用自己的 Conversation API；Create/List/History 形成可刷新恢复的真实会话入口。
+- 验收：New Chat 用本地首条消息创建 Conversation 并取得 UUID，再把同一内容交给 Message 流程发送；Sidebar 使用真实列表；点击 Conversation 加载对应消息；切换会话不会串数据；发送中的用户消息占位与临时乐观状态只在客户端维护。
+- 明确不做：让 Conversation API 代替 Message API 发送、Provider 调用和 SSE
+
+#### A7.5 发送消息与服务端上下文组装 — 后续
+
+- 训练能力：首条和后续消息都走同一个 Message API；后端拥有 Conversation 历史和 LLM 上下文来源，发送时只接受当前 content，在 Service 内完成所有权、历史读取、预算、system prompt 组装和 Provider 调用。
+- 验收：首条和后续消息使用同一 API；Message Service 不判断是否首轮，也不修改 title；只返回本轮新增的 assistant 回复；两消息同一事务提交；失败不留下半轮数据；第二轮请求能引用第一轮；跨用户发送 404；客户端无法提交 history/system/model；历史条数和字符数有硬上限；Provider 请求由 fake provider 断言。
+- 明确不做：LLM 总结压缩、Tool 调用和 SSE
+
+#### A7.6 Conversation 并发发送串行化 — 后续
+
+- 训练能力：同一 Conversation 在多个标签页、设备或快速重复提交下，也必须按唯一顺序读取历史、生成回复和持久化消息。
+- 背景：两个 Message 请求可能同时读到相同旧历史并分别调用 Provider，后发请求可能先生成或先落库，导致回复看不到彼此、消息顺序取决于 Provider 完成顺序。
+- 方案：Conversation 增加 processing token 与过期时间；发送前原子 lease，失败返回 409 并让前端提示重试；Provider 结束后在 finally 中按 token 释放。Provider 等待期间不持有数据库连接。
+- 验收：两个重叠请求只有一个能调用 Provider，另一个返回 409；阻塞式 fake provider 可稳定复现；进程异常后 lease 到期允许恢复；正常完成、Provider 失败和持久化失败都释放占位。
+- 明确不做：Redis 锁、独立任务队列和完整 AgentRun 状态机；这些能力在后续 Agent Loop 阶段再升级。
+
 ### A8 SSE 流式文本 — 后续
 
 - 训练能力：单向流式协议、增量渲染、取消和错误恢复。流式只改变传输方式，不改变 A7 的服务端 Conversation 与上下文语义。
@@ -251,27 +324,33 @@
 ### A15 文件、协作与工程化 — 后续
 
 - 附件上传、WebSocket 协作、性能、缓存、部署和可选 SSR。
+- AI 标题作为独立能力实现：Conversation 创建时先根据传入的首条 message 生成确定性标题，后续通过独立接口生成和更新标题。
 - 这些能力不得阻塞 Agent 核心主线。
 
 ## 下一步
 
-进入 A7.1：先定义 Conversation / Message 模型和数据库迁移。前端只拉取和展示历史，发送时只提交当前 content；后端持有权威历史、所有权检查和上下文预算，再在 Service 层组装 Provider 请求。
+进入 A7.4：接入真实 Conversation 列表、New Chat 和 history。New Chat 用本地首条消息创建 Conversation，随后用返回的 UUID 调用 Message API；发送中的占位与失败重试状态由前端维护。
 
 后续顺序：
 
 1. A6：单轮非流式 Chat 端到端闭环 — ✓
-2. A7：Conversation 持久化与服务端上下文 — 进行中
-3. A8：SSE 流式文本
-4. A9：Tool Contract 与天气单工具闭环
-5. A10：Agent Loop、限额、Trace 与 Eval
-6. A11：RAG 知识检索工具
-7. A12：Conversation 历史治理与高级压缩
-8. A13：长期记忆工具
-9. A14：Trip 权限、私有知识与写入工具
-10. A15：文件、协作与工程化
+2. A7.1：Conversation / Message 持久化模型 — ✓
+3. A7.2：Conversation 列表与消息读取 API — ✓
+4. A7.3：Conversation 创建 API — ✓
+5. A7.4：前端真实会话列表、New Chat 与历史加载
+6. A7.5：发送消息与服务端上下文组装
+7. A7.6：Conversation 并发发送串行化
+8. A8：SSE 流式文本
+9. A9：Tool Contract 与天气单工具闭环
+10. A10：Agent Loop、限额、Trace 与 Eval
+11. A11：RAG 知识检索工具
+12. A12：Conversation 历史治理与高级压缩
+13. A13：长期记忆工具
+14. A14：Trip 权限、私有知识与写入工具
+15. A15：文件、协作与工程化
 
 Agent 核心能力不延后到文件上传和协作功能之后。每个 A6–A15 步骤在开始前由 /tutor 补充具体目标、验收和证据要求；验收通过后才更新为完成。
 
 测试环境 TODO（后续学习）：在现有本地 hooks 基础上补 GitHub Actions，区分 unit / integration / e2e 的依赖与数据库配置；生产数据库永远不参与测试。
 
-准备：A7.1 由用户手写 Conversation / Message 的 typed SQLAlchemy 模型、外键级联、角色约束和索引；Codex 随后补 Alembic 脚手架、迁移检查与测试。
+准备：A7.4 先梳理 New Chat 的两段式提交状态（创建 Conversation → 发送首条 Message），再接入列表、history、切换会话和失败重试；乐观消息只在客户端存在。

@@ -1,6 +1,6 @@
 from typing import Literal
 
-from pydantic import SecretStr
+from pydantic import Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -18,6 +18,8 @@ class Settings(BaseSettings):
     llm_provider: Literal["deepseek", "glm"] = "deepseek"
     llm_timeout: float = 30.0
     llm_max_retries: int = 0
+    chat_context_max_messages: int = Field(default=40, gt=0)
+    chat_context_max_chars: int = Field(default=16_000, gt=0)
     deepseek_api_key: SecretStr | None = None
     deepseek_base_url: str = "https://api.deepseek.com"
     deepseek_model: str = "deepseek-flash"

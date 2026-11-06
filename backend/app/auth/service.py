@@ -6,6 +6,11 @@ from sqlalchemy import delete, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.auth.errors import (
+    EmailAlreadyRegisteredError,
+    InvalidCredentialsError,
+    InvalidSessionError,
+)
 from app.auth.models import AuthSession, User
 from app.core.config import settings
 from app.core.security import (
@@ -14,18 +19,6 @@ from app.core.security import (
     hash_session_token,
     verify_password,
 )
-
-
-class EmailAlreadyRegisteredError(Exception):
-    pass
-
-
-class InvalidCredentialsError(Exception):
-    pass
-
-
-class InvalidSessionError(Exception):
-    pass
 
 
 @dataclass(frozen=True)
