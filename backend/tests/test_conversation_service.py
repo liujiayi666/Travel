@@ -19,8 +19,10 @@ from app.conversations.service import (
     build_conversation_title,
     list_conversations,
     list_messages,
+    send_message,
 )
 from app.core.config import Settings, settings
+from app.llm.contracts import LlmAssistantMessage, LlmRequest, LlmResponse
 
 
 @pytest.fixture
@@ -90,6 +92,36 @@ def test_settings_reject_non_positive_context_limits() -> None:
         Settings(chat_context_max_messages=0)
     with pytest.raises(ValidationError):
         Settings(chat_context_max_chars=0)
+
+
+@pytest.mark.anyio
+async def test_send_message_releases_read_transaction_before_provider_call(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    transaction_states: list[bool] = []
+
+    async with session_factory() as session:
+        user = make_user("Provider transaction")
+        session.add(user)
+        await session.flush()
+        conversation = Conversation(user_id=user.id, title="Context")
+        session.add(conversation)
+        await session.commit()
+
+        class TransactionProbeProvider:
+            async def complete(self, request: LlmRequest) -> LlmResponse:
+                transaction_states.append(session.in_transaction())
+                return LlmResponse(message=LlmAssistantMessage(content="reply"))
+
+        await send_message(
+            session,
+            TransactionProbeProvider(),
+            user_id=user.id,
+            conversation_id=conversation.id,
+            content="question",
+        )
+
+    assert transaction_states == [False]
 
 
 @pytest.mark.anyio

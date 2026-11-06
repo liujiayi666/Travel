@@ -192,6 +192,8 @@ async def send_message(
         conversation_id=conversation_id,
         limit=settings.chat_context_max_messages,
     )
+    # End the read transaction before waiting on an external Provider.
+    await session.commit()
     reply = await answer_message(
         provider,
         request=LlmRequest(messages=build_context(history=history, content=content)),
