@@ -326,9 +326,9 @@ POST /api/runs/{runId}/cancel
 
 A6 先打通“已认证用户输入一条消息 → Provider → 返回完整答案”，不保存 Message。A7 建立服务端权威的 Conversation / Message：前端只拉取历史用于展示，并在发送时提交当前 `content`；后端完成所有权检查、读取有限历史、上下文预算、system prompt 拼装和消息持久化。发送接口只返回本轮新增的 assistant 回复；客户端不能提交完整 history 或 system 消息，避免伪造 assistant 内容、绕过预算或跨用户读取。
 
-`POST /api/conversations` 只负责创建 ConversationResource，不调用 Provider，也不保存 Message。初始 title 使用服务端默认值；该接口使用严格空请求 DTO 并返回 `201 + ConversationResponse`。
+`POST /api/conversations` 只负责创建 ConversationResource，不调用 Provider，也不保存 Message。请求必须携带首条 `message`，服务端只把它规范化并截取前 50 字符作为初始 title，不把该字段写成 Message；接口返回 `201 + ConversationResponse`。
 
-首条与后续消息统一由 `POST /api/conversations/{id}/messages` 处理。后端完成 ownership 检查、读取有界历史、组装 system prompt、调用 Provider，并在同一事务中保存本轮 user/assistant Message；响应只返回本轮 assistant 回复。历史为空时，Service 使用当前首条 `content` 生成不超过 50 字符的确定性 title，并随首轮消息一起提交；后续消息不再覆盖 title。AI 标题作为独立能力延后。前端负责自己的展示状态，包括发送中的占位和乐观更新，不能要求 Conversation API 代替 Message API 执行发送。
+首条与后续消息统一由 `POST /api/conversations/{id}/messages` 处理。后端完成 ownership 检查、读取有界历史、组装 system prompt、调用 Provider，并在同一事务中保存本轮 user/assistant Message；响应只返回本轮 assistant 回复。Message API 不判断是否首轮，也不修改 Conversation.title。AI 标题作为独立能力延后。前端负责自己的展示状态，包括发送中的占位和乐观更新，不能要求 Conversation API 代替 Message API 执行发送。
 
 消息发送目前不做请求幂等。客户端因超时重试时可能重复调用 Provider 并产生重复消息；该风险在引入 `Idempotency-Key` 前必须显式保留。Conversation 与 Message 写接口都必须经过认证、Origin 检查和严格请求 DTO。
 

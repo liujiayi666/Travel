@@ -242,20 +242,20 @@
 #### A7.3 Conversation 创建 API — 进行中
 
 - 训练能力：让真实用户从零创建自己拥有的 ConversationResource，明确 Conversation 只负责资源生命周期，不负责发送消息。
-- 接口：`POST /api/conversations` 接受严格空请求 DTO（`extra="forbid"`）；Owner 来自当前 Session 用户，初始 title 使用服务端默认值。成功返回 `201 + ConversationResponse`，不调用 Provider；title 在首条 Message 发送时根据内容更新。
-- 验收：创建后立即出现在 GET 列表；数据库 owner 与当前用户一致；未认证 401；缺少 trusted Origin 403；伪造 content/user ID/model/title 等字段 422。
+- 接口：`POST /api/conversations` 接受严格 `message` 请求 DTO（`extra="forbid"`）；Owner 来自当前 Session 用户，服务端使用该 `message` 生成不超过 50 字符的初始 title，但不把它保存为 Message。成功返回 `201 + ConversationResponse`，不调用 Provider。
+- 验收：创建后立即出现在 GET 列表；数据库 owner 与当前用户一致；title 来自请求 message 并截断；未认证 401；缺少 trusted Origin 403；伪造 user ID/model/title 等字段 422。
 - 明确不做：通过 Conversation API 发送消息、LLM 标题、客户端指定 owner/模型/system prompt、请求幂等
 
 #### A7.4 前端真实会话列表、New Chat 与历史加载 — 后续
 
 - 训练能力：前端只消费应用自己的 Conversation API；Create/List/History 形成可刷新恢复的真实会话入口。
-- 验收：New Chat 先取得 Conversation UUID，再交给 Message 流程发送；Sidebar 使用真实列表；点击 Conversation 加载对应消息；切换会话不会串数据；首条消息成功后可刷新列表取得新 title；发送中的用户消息占位与临时乐观状态只在客户端维护。
+- 验收：New Chat 用本地首条消息创建 Conversation 并取得 UUID，再把同一内容交给 Message 流程发送；Sidebar 使用真实列表；点击 Conversation 加载对应消息；切换会话不会串数据；发送中的用户消息占位与临时乐观状态只在客户端维护。
 - 明确不做：让 Conversation API 代替 Message API 发送、Provider 调用和 SSE
 
 #### A7.5 发送消息与服务端上下文组装 — 后续
 
 - 训练能力：首条和后续消息都走同一个 Message API；后端拥有 Conversation 历史和 LLM 上下文来源，发送时只接受当前 content，在 Service 内完成所有权、历史读取、预算、system prompt 组装和 Provider 调用。
-- 验收：首轮在空历史下发送，并用首条 content 生成不超过 50 字符的 title；只返回本轮新增的 assistant 回复；title 与两消息同一事务提交；后续消息不覆盖 title；失败不留下半轮数据；第二轮请求能引用第一轮；跨用户发送 404；客户端无法提交 history/system/model；历史条数和字符数有硬上限；Provider 请求由 fake provider 断言。
+- 验收：首条和后续消息使用同一 API；Message Service 不判断是否首轮，也不修改 title；只返回本轮新增的 assistant 回复；两消息同一事务提交；失败不留下半轮数据；第二轮请求能引用第一轮；跨用户发送 404；客户端无法提交 history/system/model；历史条数和字符数有硬上限；Provider 请求由 fake provider 断言。
 - 明确不做：LLM 总结压缩、Tool 调用和 SSE
 
 ### A8 SSE 流式文本 — 后续
