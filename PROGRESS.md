@@ -37,6 +37,7 @@
 | 9 | 2026-11-04 | 完成 A6 单轮 Chat 端到端闭环验收，并明确 Provider 内部请求错误与上游错误的边界 |
 | 10 | 2026-11-04 | 完成 A7.1 Conversation / Message 持久化模型、约束、索引与级联测试 |
 | 11 | 2026-11-05 | 完成 A7.2 Conversation 列表与 Message 最近一页读取 API，验证服务端所有权过滤和稳定顺序 |
+| 12 | 2026-11-05 | 路线修正：A7.3 Conversation 创建 → A7.4 前端真实列表/New Chat/历史 → A7.5 消息发送与服务端上下文 |
 
 ## 易错本
 
@@ -238,10 +239,23 @@
 - 学到：HTTP 404 要区分路由不存在与业务资源不存在；Response DTO 是 ORM 到公开 API 的白名单
 - 面试向：我用 owner-scoped SQL、有界最近页查询、UUID Response DTO、统一 404 和 HTTP 集成测试建立 Conversation 读取边界，并验证跨用户访问不会泄露资源存在性或聊天内容
 
-#### A7.3 发送消息与服务端上下文组装 — 进行中
+#### A7.3 Conversation 创建 API — 进行中
 
-- 训练能力：后端拥有 Conversation 历史和 LLM 上下文来源；发送时只接受当前 content，在 Service 内完成所有权、历史读取、预算、system prompt 组装和 Provider 调用。
-- 验收：第二轮请求能引用第一轮；跨用户发送 404；客户端无法提交 history/system/model；历史条数和字符数有硬上限；Provider 请求由 fake provider 断言。
+- 训练能力：让真实用户从零创建自己拥有的 ConversationResource，明确 Conversation 只负责资源生命周期，不负责发送消息。
+- 接口：`POST /api/conversations` 接受严格空请求 DTO（`extra="forbid"`）；Owner 来自当前 Session 用户，初始 title 使用服务端默认值。成功返回 `201 + ConversationResponse`，不调用 Provider；title 在首条 Message 发送时根据内容更新。
+- 验收：创建后立即出现在 GET 列表；数据库 owner 与当前用户一致；未认证 401；缺少 trusted Origin 403；伪造 content/user ID/model/title 等字段 422。
+- 明确不做：通过 Conversation API 发送消息、LLM 标题、客户端指定 owner/模型/system prompt、请求幂等
+
+#### A7.4 前端真实会话列表、New Chat 与历史加载 — 后续
+
+- 训练能力：前端只消费应用自己的 Conversation API；Create/List/History 形成可刷新恢复的真实会话入口。
+- 验收：New Chat 先取得 Conversation UUID，再交给 Message 流程发送；Sidebar 使用真实列表；点击 Conversation 加载对应消息；切换会话不会串数据；首条消息成功后可刷新列表取得新 title；发送中的用户消息占位与临时乐观状态只在客户端维护。
+- 明确不做：让 Conversation API 代替 Message API 发送、Provider 调用和 SSE
+
+#### A7.5 发送消息与服务端上下文组装 — 后续
+
+- 训练能力：首条和后续消息都走同一个 Message API；后端拥有 Conversation 历史和 LLM 上下文来源，发送时只接受当前 content，在 Service 内完成所有权、历史读取、预算、system prompt 组装和 Provider 调用。
+- 验收：首轮在空历史下发送，并用首条 content 生成不超过 50 字符的 title；只返回本轮新增的 assistant 回复；title 与两消息同一事务提交；后续消息不覆盖 title；失败不留下半轮数据；第二轮请求能引用第一轮；跨用户发送 404；客户端无法提交 history/system/model；历史条数和字符数有硬上限；Provider 请求由 fake provider 断言。
 - 明确不做：LLM 总结压缩、Tool 调用和 SSE
 
 ### A8 SSE 流式文本 — 后续
@@ -291,29 +305,32 @@
 ### A15 文件、协作与工程化 — 后续
 
 - 附件上传、WebSocket 协作、性能、缓存、部署和可选 SSR。
+- AI 标题作为独立能力实现：首轮 Send 继续使用确定性标题，后续通过独立接口生成和更新标题。
 - 这些能力不得阻塞 Agent 核心主线。
 
 ## 下一步
 
-进入 A7.3：实现 `POST /api/conversations/{id}/messages`。Route 只接收当前 user content；Service 负责 Conversation ownership、读取有界历史、组装 Provider 请求、调用 LLM，并在事务边界内保存 user/assistant 消息。
+进入 A7.3：实现 `POST /api/conversations` 的 ConversationResource 创建。Route 只接收严格空 DTO；Service 使用当前用户创建默认标题的 Conversation；接口返回 ConversationResponse，不调用 Provider。
 
 后续顺序：
 
 1. A6：单轮非流式 Chat 端到端闭环 — ✓
 2. A7.1：Conversation / Message 持久化模型 — ✓
 3. A7.2：Conversation 列表与消息读取 API — ✓
-4. A7.3：发送消息与服务端上下文组装 — 进行中
-5. A8：SSE 流式文本
-6. A9：Tool Contract 与天气单工具闭环
-7. A10：Agent Loop、限额、Trace 与 Eval
-8. A11：RAG 知识检索工具
-9. A12：Conversation 历史治理与高级压缩
-10. A13：长期记忆工具
-11. A14：Trip 权限、私有知识与写入工具
-12. A15：文件、协作与工程化
+4. A7.3：Conversation 创建 API — 进行中
+5. A7.4：前端真实会话列表、New Chat 与历史加载
+6. A7.5：发送消息与服务端上下文组装
+7. A8：SSE 流式文本
+8. A9：Tool Contract 与天气单工具闭环
+9. A10：Agent Loop、限额、Trace 与 Eval
+10. A11：RAG 知识检索工具
+11. A12：Conversation 历史治理与高级压缩
+12. A13：长期记忆工具
+13. A14：Trip 权限、私有知识与写入工具
+14. A15：文件、协作与工程化
 
 Agent 核心能力不延后到文件上传和协作功能之后。每个 A6–A15 步骤在开始前由 /tutor 补充具体目标、验收和证据要求；验收通过后才更新为完成。
 
 测试环境 TODO（后续学习）：在现有本地 hooks 基础上补 GitHub Actions，区分 unit / integration / e2e 的依赖与数据库配置；生产数据库永远不参与测试。
 
-准备：A7.3 由用户先定义上下文预算和消息持久化事务边界；Route 只负责认证、HTTP 参数与响应映射。
+准备：A7.3 由用户先定义创建请求边界和 Service 事务；Route 只负责认证、Origin、HTTP 状态与响应映射。
