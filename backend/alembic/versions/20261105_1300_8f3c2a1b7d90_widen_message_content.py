@@ -31,7 +31,14 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    """Restore the previous varchar limit."""
+    """Restore the previous varchar limit with an explicit lossy truncation."""
+    # Narrowing text to varchar cannot preserve content longer than 4000 characters.
+    # Truncate explicitly so rollback is deterministic instead of failing mid-migration.
+    op.execute(
+        sa.text(
+            "UPDATE messages SET content = left(content, 4000) WHERE char_length(content) > 4000"
+        )
+    )
     op.alter_column(
         "messages",
         "content",
