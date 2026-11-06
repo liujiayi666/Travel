@@ -269,6 +269,14 @@
 - 验收：首条和后续消息使用同一 API；Message Service 不判断是否首轮，也不修改 title；只返回本轮新增的 assistant 回复；两消息同一事务提交；失败不留下半轮数据；第二轮请求能引用第一轮；跨用户发送 404；客户端无法提交 history/system/model；历史条数和字符数有硬上限；Provider 请求由 fake provider 断言。
 - 明确不做：LLM 总结压缩、Tool 调用和 SSE
 
+#### A7.6 Conversation 并发发送串行化 — 后续
+
+- 训练能力：同一 Conversation 在多个标签页、设备或快速重复提交下，也必须按唯一顺序读取历史、生成回复和持久化消息。
+- 背景：两个 Message 请求可能同时读到相同旧历史并分别调用 Provider，后发请求可能先生成或先落库，导致回复看不到彼此、消息顺序取决于 Provider 完成顺序。
+- 方案：Conversation 增加 processing token 与过期时间；发送前原子 lease，失败返回 409 并让前端提示重试；Provider 结束后在 finally 中按 token 释放。Provider 等待期间不持有数据库连接。
+- 验收：两个重叠请求只有一个能调用 Provider，另一个返回 409；阻塞式 fake provider 可稳定复现；进程异常后 lease 到期允许恢复；正常完成、Provider 失败和持久化失败都释放占位。
+- 明确不做：Redis 锁、独立任务队列和完整 AgentRun 状态机；这些能力在后续 Agent Loop 阶段再升级。
+
 ### A8 SSE 流式文本 — 后续
 
 - 训练能力：单向流式协议、增量渲染、取消和错误恢复。流式只改变传输方式，不改变 A7 的服务端 Conversation 与上下文语义。
@@ -331,14 +339,15 @@
 4. A7.3：Conversation 创建 API — ✓
 5. A7.4：前端真实会话列表、New Chat 与历史加载
 6. A7.5：发送消息与服务端上下文组装
-7. A8：SSE 流式文本
-8. A9：Tool Contract 与天气单工具闭环
-9. A10：Agent Loop、限额、Trace 与 Eval
-10. A11：RAG 知识检索工具
-11. A12：Conversation 历史治理与高级压缩
-12. A13：长期记忆工具
-13. A14：Trip 权限、私有知识与写入工具
-14. A15：文件、协作与工程化
+7. A7.6：Conversation 并发发送串行化
+8. A8：SSE 流式文本
+9. A9：Tool Contract 与天气单工具闭环
+10. A10：Agent Loop、限额、Trace 与 Eval
+11. A11：RAG 知识检索工具
+12. A12：Conversation 历史治理与高级压缩
+13. A13：长期记忆工具
+14. A14：Trip 权限、私有知识与写入工具
+15. A15：文件、协作与工程化
 
 Agent 核心能力不延后到文件上传和协作功能之后。每个 A6–A15 步骤在开始前由 /tutor 补充具体目标、验收和证据要求；验收通过后才更新为完成。
 

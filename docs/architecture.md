@@ -332,6 +332,8 @@ A6 先打通“已认证用户输入一条消息 → Provider → 返回完整�
 
 消息发送目前不做请求幂等。客户端因超时重试时可能重复调用 Provider 并产生重复消息；该风险在引入 `Idempotency-Key` 前必须显式保留。Conversation 与 Message 写接口都必须经过认证、Origin 检查和严格请求 DTO。
 
+同一 Conversation 的并发发送也暂未串行化：多个请求可能读取相同旧历史并分别调用 Provider。A7.6 使用数据库 processing lease 让每个 Conversation 同一时刻只有一个发送者，冲突请求返回 409；Provider 调用期间不持有数据库连接，租约到期后允许崩溃恢复。
+
 A8 复用同一 Conversation 语义增加 SSE，流式只改变传输和增量展示方式。A12 进一步治理长会话的分页、保留、摘要压缩与成本，不改变“后端拥有模型上下文”的所有权。
 
 需要流式回答时，第一版可用 POST + `fetch()` 读取 `ReadableStream`。需要自动重连和任务恢复时，再演进为“POST 创建 Run + GET EventSource 订阅事件”。
