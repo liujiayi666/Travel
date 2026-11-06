@@ -3,6 +3,7 @@ from collections.abc import AsyncIterator
 from datetime import UTC, datetime, timedelta
 
 import pytest
+from pydantic import ValidationError
 from sqlalchemy import delete
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
@@ -10,8 +11,16 @@ from sqlalchemy.pool import NullPool
 from app.auth.models import User
 from app.conversations.errors import ConversationNotFoundError
 from app.conversations.models import Conversation, Message
-from app.conversations.service import list_conversations, list_messages
-from app.core.config import settings
+from app.conversations.service import (
+    DEFAULT_CONVERSATION_TITLE,
+    MAX_TITLE_CHARS,
+    SYSTEM_PROMPT,
+    build_context,
+    build_conversation_title,
+    list_conversations,
+    list_messages,
+)
+from app.core.config import Settings, settings
 
 
 @pytest.fixture
@@ -40,6 +49,47 @@ def make_user(display_name: str) -> User:
         password_hash="unused-test-hash",
         display_name=display_name,
     )
+
+
+def test_build_conversation_title_uses_first_message_content() -> None:
+    content = f"  {'杭州周末行程' * 12}  "
+
+    title = build_conversation_title(content)
+
+    assert title == " ".join(content.split())[:MAX_TITLE_CHARS]
+    assert len(title) == MAX_TITLE_CHARS
+    assert build_conversation_title(" 杭州  周末 ") == "杭州 周末"
+    assert build_conversation_title("   ") == DEFAULT_CONVERSATION_TITLE
+
+
+def test_build_context_keeps_newest_messages_within_character_budget(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    conversation_id = uuid.uuid4()
+    monkeypatch.setattr(
+        settings,
+        "chat_context_max_chars",
+        len(SYSTEM_PROMPT) + len("current") + 4,
+    )
+    history = [
+        Message(conversation_id=conversation_id, role="user", content="old1"),
+        Message(conversation_id=conversation_id, role="assistant", content="new1"),
+    ]
+
+    context = build_context(history=history, content="current")
+
+    assert [(message.role, message.content) for message in context] == [
+        ("system", SYSTEM_PROMPT),
+        ("assistant", "new1"),
+        ("user", "current"),
+    ]
+
+
+def test_settings_reject_non_positive_context_limits() -> None:
+    with pytest.raises(ValidationError):
+        Settings(chat_context_max_messages=0)
+    with pytest.raises(ValidationError):
+        Settings(chat_context_max_chars=0)
 
 
 @pytest.mark.anyio

@@ -2,10 +2,9 @@ import datetime
 import uuid
 from typing import Literal
 
-from sqlalchemy import CheckConstraint, DateTime, ForeignKey, Index, String, Uuid, func
+from sqlalchemy import CheckConstraint, DateTime, ForeignKey, Index, String, Text, Uuid, func
 from sqlalchemy.orm import Mapped, mapped_column
 
-from app.chat.schemas import MAX_TEXT_CHARS_PER_MESSAGE
 from app.core.db import Base
 
 
@@ -39,7 +38,7 @@ class Message(Base):
         Uuid, ForeignKey("conversations.id", ondelete="CASCADE")
     )
     role: Mapped[Literal["user", "assistant"]] = mapped_column(String(20), nullable=False)
-    content: Mapped[str] = mapped_column(String(MAX_TEXT_CHARS_PER_MESSAGE), nullable=False)
+    content: Mapped[str] = mapped_column(Text, nullable=False)
     created_at: Mapped[datetime.datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
