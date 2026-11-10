@@ -7,6 +7,12 @@ export class ApiError extends Error {
   }
 }
 
+interface JsonParser<T> {
+  parse(input: unknown): T;
+}
+
+type JsonRequestOptions = Omit<RequestInit, "method" | "body">;
+
 export const httpRequest = async (
   url: string,
   options: RequestInit = {},
@@ -32,4 +38,36 @@ export const httpRequest = async (
   }
 
   return response;
+};
+
+export const getJson = async <T>(
+  url: string,
+  schema: JsonParser<T>,
+  options: JsonRequestOptions = {},
+): Promise<T> => {
+  const response = await httpRequest(url, {
+    ...options,
+    method: "GET",
+  });
+
+  return schema.parse(await response.json());
+};
+
+export const postJson = async <T>(
+  url: string,
+  body: unknown,
+  schema: JsonParser<T>,
+  options: JsonRequestOptions = {},
+): Promise<T> => {
+  const headers = new Headers(options.headers);
+  headers.set("Content-Type", "application/json");
+
+  const response = await httpRequest(url, {
+    ...options,
+    method: "POST",
+    headers,
+    body: JSON.stringify(body),
+  });
+
+  return schema.parse(await response.json());
 };

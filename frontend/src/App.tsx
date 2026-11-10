@@ -1,19 +1,12 @@
 import { RouterProvider } from "react-router";
-import { AuthProvider } from "@features/auth/AuthProvider";
-import { SessionChatDraftProvider } from "@features/chat/ChatDraftProvider";
-import { ModalOutlet } from "@app/modal/ModalOutlet";
-import { router } from "@app/router";
-import { ModalProvider } from "@shared/components/Modal/ModalProvider";
+import { router } from "@/routes";
+import { QueryClientProvider } from "@tanstack/react-query";
+import { queryClient } from "@/providers/queryClient";
 
 export default function App() {
   return (
-    <AuthProvider>
-      <SessionChatDraftProvider>
-        <ModalProvider>
-          <RouterProvider router={router} />
-          <ModalOutlet />
-        </ModalProvider>
-      </SessionChatDraftProvider>
-    </AuthProvider>
+    <QueryClientProvider client={queryClient}>
+      <RouterProvider router={router} />
+    </QueryClientProvider>
   );
 }

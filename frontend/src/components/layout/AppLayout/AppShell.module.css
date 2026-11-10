@@ -1,0 +1,60 @@
+.appShell {
+  display: grid;
+  height: 100%;
+  grid-template-columns: 240px minmax(0, 1fr);
+  min-height: 0;
+  overflow: hidden;
+  color: #17201d;
+  color-scheme: light;
+  text-align: left;
+  background: #fcfdfc;
+}
+
+.skipLink {
+  position: fixed;
+  top: 12px;
+  left: 12px;
+  z-index: 100;
+  padding: 10px 14px;
+  color: #ffffff;
+  font-size: var(--font-size-label);
+  font-weight: var(--font-weight-semibold);
+  line-height: var(--line-height-label);
+  text-decoration: none;
+  background: #138d7b;
+  border-radius: 8px;
+  transform: translateY(-160%);
+}
+
+.skipLink:focus-visible {
+  outline: 2px solid #17201d;
+  outline-offset: 2px;
+  transform: translateY(0);
+}
+
+.sidebar {
+  position: relative;
+  min-width: 0;
+  height: 100%;
+  min-height: 0;
+}
+
+.sidebarContent {
+  height: 100%;
+  min-height: 0;
+}
+
+.contentColumn {
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+  flex-direction: column;
+}
+
+.content {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  flex-direction: column;
+}
