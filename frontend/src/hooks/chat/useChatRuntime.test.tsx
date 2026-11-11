@@ -96,7 +96,6 @@ describe("useChatRuntime", () => {
           "user-1",
           currentConversationId,
           onAuthRequired,
-          vi.fn(),
         ),
       {
         wrapper: Wrapper,
@@ -145,7 +144,6 @@ describe("useChatRuntime", () => {
           "user-1",
           currentConversationId,
           onAuthRequired,
-          vi.fn(),
         ),
       {
         wrapper: Wrapper,
@@ -190,7 +188,7 @@ describe("useChatRuntime", () => {
     const onAuthRequired = vi.fn();
     const { result } = renderHook(
       () =>
-        useChatRuntime("user-1", null, onAuthRequired, vi.fn()),
+        useChatRuntime("user-1", null, onAuthRequired),
       { wrapper: Wrapper },
     );
 
@@ -209,17 +207,20 @@ describe("useChatRuntime", () => {
     });
   });
 
-  it("ignores a creation response after the runtime unmounts", async () => {
+  it("finishes the initial send when the runtime unmounts during creation", async () => {
     let resolveCreate!: (conversation: typeof createdConversation) => void;
     createConversationMock.mockReturnValue(
       new Promise<typeof createdConversation>((resolve) => {
         resolveCreate = resolve;
       }),
     );
+    sendMessageMock.mockResolvedValue({
+      message: { role: "assistant", content: "先去西湖。" },
+    });
 
     const { getPath, Wrapper } = createWrapper();
     const { result, unmount } = renderHook(
-      () => useChatRuntime("user-1", null, vi.fn(), vi.fn()),
+      () => useChatRuntime("user-1", null, vi.fn()),
       { wrapper: Wrapper },
     );
 
@@ -236,11 +237,11 @@ describe("useChatRuntime", () => {
     });
 
     expect(getPath()).toBe("/");
-    expect(sendMessageMock).not.toHaveBeenCalled();
+    expect(sendMessageMock).toHaveBeenCalledOnce();
     expect(useChatRuntimeStore.getState().runsById).toEqual({});
   });
 
-  it("ignores a creation error after the runtime unmounts", async () => {
+  it("ignores a creation error after the session reset", async () => {
     let rejectCreate!: (error: unknown) => void;
     createConversationMock.mockReturnValue(
       new Promise((_, reject) => {
@@ -251,7 +252,7 @@ describe("useChatRuntime", () => {
     const { Wrapper } = createWrapper();
     const onAuthRequired = vi.fn();
     const { result, unmount } = renderHook(
-      () => useChatRuntime("user-1", null, onAuthRequired, vi.fn()),
+      () => useChatRuntime("user-1", null, onAuthRequired),
       { wrapper: Wrapper },
     );
 
@@ -260,6 +261,7 @@ describe("useChatRuntime", () => {
       submitPromise = result.current.submitMessage("杭州玩两天");
     });
 
+    useChatRuntimeStore.getState().clearAll();
     unmount();
     rejectCreate(new ApiError(401, "Unauthorized"));
 
@@ -286,7 +288,7 @@ describe("useChatRuntime", () => {
 
     const { result } = renderHook(
       () =>
-        useChatRuntime("user-1", conversationId, vi.fn(), vi.fn()),
+        useChatRuntime("user-1", conversationId, vi.fn()),
       { wrapper: Wrapper },
     );
 
@@ -334,7 +336,6 @@ describe("useChatRuntime", () => {
           "user-1",
           conversationId,
           onAuthRequired,
-          vi.fn(),
         ),
       { wrapper: Wrapper },
     );
@@ -359,6 +360,136 @@ describe("useChatRuntime", () => {
     expect(useChatRuntimeStore.getState().runsById).toEqual({});
   });
 
+  it("ignores an in-flight send rejection after session reset", async () => {
+    let rejectSend!: (error: unknown) => void;
+    sendMessageMock.mockReturnValue(
+      new Promise((_, reject) => {
+        rejectSend = reject;
+      }),
+    );
+    useChatRuntimeStore
+      .getState()
+      .enqueueConversationMessage(conversationId, "杭州玩两天");
+    const onAuthRequired = vi.fn();
+    const { Wrapper } = createWrapper();
+    const { unmount } = renderHook(
+      () =>
+        useChatRuntime(
+          "user-1",
+          conversationId,
+          onAuthRequired,
+        ),
+      { wrapper: Wrapper },
+    );
+
+    await waitFor(() => {
+      expect(sendMessageMock).toHaveBeenCalledOnce();
+    });
+
+    useChatRuntimeStore.getState().clearAll();
+    unmount();
+    rejectSend(new ApiError(401, "Unauthorized"));
+
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(onAuthRequired).not.toHaveBeenCalled();
+    expect(useChatRuntimeStore.getState().runsById).toEqual({});
+  });
+
+  it("marks the run failed when sending returns 404", async () => {
+    sendMessageMock.mockRejectedValue(
+      new ApiError(404, "Conversation not found"),
+    );
+    useChatRuntimeStore
+      .getState()
+      .enqueueConversationMessage(conversationId, "杭州玩两天");
+    const { Wrapper } = createWrapper();
+
+    const { result } = renderHook(
+      () =>
+        useChatRuntime(
+          "user-1",
+          conversationId,
+          vi.fn(),
+        ),
+      { wrapper: Wrapper },
+    );
+
+    await waitFor(() => {
+      expect(
+        Object.values(useChatRuntimeStore.getState().runsById)[0],
+      ).toMatchObject({
+        phase: "failed",
+        content: "杭州玩两天",
+        error: "This conversation is no longer available.",
+      });
+    });
+    expect(result.current.historyState.status).not.toBe("idle");
+  });
+
+  it("loads older history pages in chronological order", async () => {
+    const newestPage = Array.from({ length: 20 }, (_, index) => ({
+      id: `new-${index}`,
+      conversationId,
+      role: "user" as const,
+      content: `Message ${index + 1}`,
+      createdAt: "2026-11-09T00:00:00Z",
+    }));
+    const olderPage = [
+      {
+        id: "old-1",
+        conversationId,
+        role: "user" as const,
+        content: "Oldest",
+        createdAt: "2026-11-08T00:00:00Z",
+      },
+      {
+        id: "old-2",
+        conversationId,
+        role: "assistant" as const,
+        content: "Older reply",
+        createdAt: "2026-11-08T00:01:00Z",
+      },
+    ];
+    getConversationMessageListMock.mockImplementation(
+      async (_id: string, { offset = 0 }: { offset?: number }) =>
+        offset === 0 ? newestPage : olderPage,
+    );
+    const { Wrapper } = createWrapper();
+
+    const { result } = renderHook(
+      () =>
+        useChatRuntime(
+          "user-1",
+          conversationId,
+          vi.fn(),
+        ),
+      { wrapper: Wrapper },
+    );
+
+    await waitFor(() => {
+      expect(result.current.messages).toHaveLength(20);
+      expect(result.current.hasOlderMessages).toBe(true);
+    });
+
+    await act(async () => {
+      await result.current.loadOlderMessages();
+    });
+
+    await waitFor(() => {
+      expect(result.current.messages).toHaveLength(22);
+    });
+    expect(
+      result.current.messages.slice(0, 2).map((message) => message.content),
+    ).toEqual(["Oldest", "Older reply"]);
+    expect(getConversationMessageListMock).toHaveBeenLastCalledWith(
+      conversationId,
+      { limit: 20, offset: 20 },
+    );
+  });
+
   it("expires authentication when history returns 401", async () => {
     getConversationMessageListMock.mockRejectedValue(
       new ApiError(401, "Unauthorized"),
@@ -372,7 +503,6 @@ describe("useChatRuntime", () => {
           "user-1",
           conversationId,
           onAuthRequired,
-          vi.fn(),
         ),
       { wrapper: Wrapper },
     );
@@ -382,26 +512,27 @@ describe("useChatRuntime", () => {
     });
   });
 
-  it("returns to New Chat when history returns 404", async () => {
+  it("exposes history errors without navigating away", async () => {
     getConversationMessageListMock.mockRejectedValue(
       new ApiError(404, "Conversation not found"),
     );
-    const onConversationUnavailable = vi.fn();
     const { Wrapper } = createWrapper();
 
-    renderHook(
+    const { result } = renderHook(
       () =>
         useChatRuntime(
           "user-1",
           conversationId,
           vi.fn(),
-          onConversationUnavailable,
         ),
       { wrapper: Wrapper },
     );
 
     await waitFor(() => {
-      expect(onConversationUnavailable).toHaveBeenCalledOnce();
+      expect(result.current.historyState).toMatchObject({
+        status: "error",
+        error: expect.any(ApiError),
+      });
     });
   });
 });

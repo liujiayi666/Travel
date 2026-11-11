@@ -39,125 +39,29 @@ const findRunForConversation = (
   return matchingRuns.find(isActivePhase) ?? matchingRuns.at(-1);
 };
 
+export type HistoryState =
+  | { status: "idle" }
+  | { status: "loading" }
+  | { status: "ready" }
+  | { status: "error"; error: unknown };
+
 export const useChatRuntime = (
   userId: string | null,
   conversationId: string | null,
   onAuthRequired: () => void,
-  onConversationUnavailable: () => void,
 ) => {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const createMutation = useCreateConversationMutation();
   const sendMutation = useSendMessageMutation();
   const messagesQuery = useConversationMessages(userId, conversationId);
-  const creatingRunIdRef = useRef<string | null>(null);
+  const mountedRef = useRef(false);
 
   const run = useChatRuntimeStore((state) =>
     userId
       ? findRunForConversation(state.runsById, conversationId)
       : undefined,
   );
-
-  const startNewChat = async (content: string) => {
-    const store = useChatRuntimeStore.getState();
-    const existingRun = findRunForConversation(store.runsById, null);
-
-    if (existingRun && isActivePhase(existingRun)) {
-      return false;
-    }
-
-    let runId: string;
-
-    if (
-      existingRun?.phase === "failed" &&
-      existingRun.content === content
-    ) {
-      store.retryFailed(existingRun.id);
-      runId = existingRun.id;
-    } else {
-      runId = store.enqueueNewChat(content);
-    }
-
-    creatingRunIdRef.current = runId;
-
-    try {
-      const conversation = await createMutation.mutateAsync({
-        message: content,
-      });
-
-      const bound = useChatRuntimeStore
-        .getState()
-        .bindConversation(runId, conversation.id);
-
-      if (!bound) {
-        return false;
-      }
-
-      creatingRunIdRef.current = null;
-      void queryClient.invalidateQueries({
-        queryKey: conversationKeys.lists(userId ?? "anonymous"),
-      });
-      navigate(`/chat/${conversation.id}`, { replace: true });
-      return true;
-    } catch (error) {
-      creatingRunIdRef.current = null;
-      const runStillExists = Boolean(
-        useChatRuntimeStore.getState().runsById[runId],
-      );
-
-      if (!runStillExists) {
-        return false;
-      }
-
-      if (isUnauthorized(error)) {
-        useChatRuntimeStore
-          .getState()
-          .markFailed(runId, "Please sign in again.");
-        onAuthRequired();
-        return false;
-      }
-
-      if (isNotFound(error)) {
-        onConversationUnavailable();
-        return false;
-      }
-
-      useChatRuntimeStore
-        .getState()
-        .markFailed(
-          runId,
-          getRuntimeErrorMessage(error, "Failed to start a new chat."),
-        );
-      return false;
-    }
-  };
-
-  const submitMessage = async (content: string) => {
-    if (!conversationId) {
-      return startNewChat(content);
-    }
-
-    const store = useChatRuntimeStore.getState();
-    const existingRun = findRunForConversation(
-      store.runsById,
-      conversationId,
-    );
-
-    if (existingRun && isActivePhase(existingRun)) {
-      return false;
-    }
-
-    if (
-      existingRun?.phase === "failed" &&
-      existingRun.content === content
-    ) {
-      store.retryFailed(existingRun.id);
-      return true;
-    }
-
-    store.enqueueConversationMessage(conversationId, content);
-    return true;
-  };
 
   const synchronizePendingRun = async (pendingRun: ChatRun) => {
     if (!pendingRun.conversationId) {
@@ -208,13 +112,11 @@ export const useChatRuntime = (
 
       if (isUnauthorized(error)) {
         onAuthRequired();
-      } else if (isNotFound(error)) {
-        onConversationUnavailable();
       }
     }
   };
 
-  const sendPendingRun = useEffectEvent(async (pendingRun: ChatRun) => {
+  const deliverPendingRun = async (pendingRun: ChatRun) => {
     if (!pendingRun.conversationId) {
       return;
     }
@@ -225,6 +127,12 @@ export const useChatRuntime = (
         payload: { content: pendingRun.content },
       });
     } catch (error) {
+      const currentRun =
+        useChatRuntimeStore.getState().runsById[pendingRun.id];
+      if (!currentRun || currentRun.phase !== "sending") {
+        return;
+      }
+
       if (isUnauthorized(error)) {
         useChatRuntimeStore
           .getState()
@@ -234,7 +142,12 @@ export const useChatRuntime = (
       }
 
       if (isNotFound(error)) {
-        onConversationUnavailable();
+        useChatRuntimeStore
+          .getState()
+          .markFailed(
+            pendingRun.id,
+            "This conversation is no longer available.",
+          );
         return;
       }
 
@@ -255,29 +168,140 @@ export const useChatRuntime = (
 
     store.markSyncing(pendingRun.id);
     await synchronizePendingRun(pendingRun);
-  });
+  };
 
-  useEffect(
-    () => () => {
-      const runId = creatingRunIdRef.current;
-      if (!runId) {
-        return;
+  const sendPendingRun = useEffectEvent(deliverPendingRun);
+
+  const startNewChat = async (content: string) => {
+    const store = useChatRuntimeStore.getState();
+    const existingRun = findRunForConversation(store.runsById, null);
+
+    if (existingRun && isActivePhase(existingRun)) {
+      return false;
+    }
+
+    let runId: string;
+
+    if (
+      existingRun?.phase === "failed" &&
+      existingRun.content === content
+    ) {
+      store.retryFailed(existingRun.id);
+      runId = existingRun.id;
+    } else {
+      runId = store.enqueueNewChat(content);
+    }
+
+    try {
+      const conversation = await createMutation.mutateAsync({
+        message: content,
+      });
+
+      const bound = useChatRuntimeStore
+        .getState()
+        .bindConversation(runId, conversation.id);
+
+      if (!bound) {
+        return false;
       }
 
-      useChatRuntimeStore.getState().removeRun(runId);
-      creatingRunIdRef.current = null;
-    },
-    [],
-  );
+      void queryClient.invalidateQueries({
+        queryKey: conversationKeys.lists(userId ?? "anonymous"),
+      });
+
+      if (mountedRef.current) {
+        navigate(`/chat/${conversation.id}`, { replace: true });
+        return true;
+      }
+
+      const pendingRun =
+        useChatRuntimeStore.getState().runsById[runId];
+      if (
+        pendingRun &&
+        useChatRuntimeStore.getState().claimForSending(runId)
+      ) {
+        const sendingRun =
+          useChatRuntimeStore.getState().runsById[runId];
+        if (sendingRun) {
+          await deliverPendingRun(sendingRun);
+        }
+      }
+      return true;
+    } catch (error) {
+      const runStillExists = Boolean(
+        useChatRuntimeStore.getState().runsById[runId],
+      );
+
+      if (!runStillExists) {
+        return false;
+      }
+
+      if (isUnauthorized(error)) {
+        useChatRuntimeStore
+          .getState()
+          .markFailed(runId, "Please sign in again.");
+        onAuthRequired();
+        return false;
+      }
+
+      if (isNotFound(error)) {
+        useChatRuntimeStore
+          .getState()
+          .markFailed(
+            runId,
+            "This conversation is no longer available.",
+          );
+        return false;
+      }
+
+      useChatRuntimeStore
+        .getState()
+        .markFailed(
+          runId,
+          getRuntimeErrorMessage(error, "Failed to start a new chat."),
+        );
+      return false;
+    }
+  };
+
+  const submitMessage = async (content: string) => {
+    if (!conversationId) {
+      return startNewChat(content);
+    }
+
+    const store = useChatRuntimeStore.getState();
+    const existingRun = findRunForConversation(
+      store.runsById,
+      conversationId,
+    );
+
+    if (existingRun && isActivePhase(existingRun)) {
+      return false;
+    }
+
+    if (
+      existingRun?.phase === "failed" &&
+      existingRun.content === content
+    ) {
+      store.retryFailed(existingRun.id);
+      return true;
+    }
+
+    store.enqueueConversationMessage(conversationId, content);
+    return true;
+  };
+
+  useEffect(() => {
+    mountedRef.current = true;
+
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
 
   const handleHistoryFailure = useEffectEvent((error: unknown) => {
     if (isUnauthorized(error)) {
       onAuthRequired();
-      return;
-    }
-
-    if (isNotFound(error)) {
-      onConversationUnavailable();
     }
   });
 
@@ -308,10 +332,22 @@ export const useChatRuntime = (
 
   return {
     run,
-    messages: messagesQuery.data ?? [],
-    historyPending:
-      Boolean(userId && conversationId) && messagesQuery.isPending,
-    historyError: messagesQuery.error,
+    messages: [...(messagesQuery.data?.pages ?? [])]
+      .reverse()
+      .flat(),
+    historyState: (
+      !userId || !conversationId
+        ? { status: "idle" }
+        : messagesQuery.isPending
+          ? { status: "loading" }
+          : messagesQuery.isError
+            ? { status: "error", error: messagesQuery.error }
+            : { status: "ready" }
+    ) satisfies HistoryState,
+    retryHistory: messagesQuery.refetch,
+    hasOlderMessages: messagesQuery.hasNextPage,
+    isLoadingOlderMessages: messagesQuery.isFetchingNextPage,
+    loadOlderMessages: messagesQuery.fetchNextPage,
     isBusy: Boolean(run && isActivePhase(run)),
     syncFailed: run?.phase === "sync-failed",
     isSending:

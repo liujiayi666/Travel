@@ -9,6 +9,9 @@ export const conversationsRequestSchema = z.object({
   offset: z.int().optional(),
 });
 
+export const conversationMessagesRequestSchema =
+  conversationsRequestSchema;
+
 export const conversationResponseSchema = z
   .object({
     id: z.string(),

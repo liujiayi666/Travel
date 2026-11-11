@@ -1,12 +1,10 @@
 import { useCallback } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "react-router";
-
 import {
   authKeys,
   type User,
 } from "@/data-provider/Auth";
-import { conversationKeys } from "@/data-provider/Conversations";
 import { useChatRuntimeStore } from "@/store/chat";
 import { useSessionLifecycleStore } from "@/store/session";
 
@@ -14,7 +12,6 @@ export interface IUseSessionTransition {
   begin: () => void;
   commit: (user: User | null) => void;
   abort: () => void;
-  resetConversationState: (conversationId: string | null) => void;
 }
 
 export const useSessionTransition = (): IUseSessionTransition => {
@@ -50,18 +47,5 @@ export const useSessionTransition = (): IUseSessionTransition => {
     enableQueries();
   }, [enableQueries]);
 
-  const resetConversationState = useCallback(
-    (conversationId: string | null) => {
-      queryClient.removeQueries({
-        queryKey: conversationKeys.all,
-      });
-      useChatRuntimeStore
-        .getState()
-        .clearConversation(conversationId);
-      navigate("/chat", { replace: true });
-    },
-    [navigate, queryClient],
-  );
-
-  return { begin, commit, abort, resetConversationState };
+  return { begin, commit, abort };
 };

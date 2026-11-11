@@ -7,10 +7,15 @@ import styles from "./Chat.module.css";
 interface SectionProps {
   auth: AuthState;
   messages?: readonly ChatMessage[];
+  hasOlderMessages?: boolean;
+  isLoadingOlderMessages?: boolean;
+  onLoadOlderMessages?: () => void;
   isSending?: boolean;
   sendError?: string | null;
   errorTitle?: string;
   onRetry?: () => void;
+  historyError?: boolean;
+  onRetryHistory?: () => void;
   showWelcome?: boolean;
   composer: {
     state: ComposerState;
@@ -21,10 +26,15 @@ interface SectionProps {
 export const Section = ({
   auth,
   messages = [],
+  hasOlderMessages,
+  isLoadingOlderMessages,
+  onLoadOlderMessages,
   isSending = false,
   sendError = null,
   errorTitle,
   onRetry,
+  historyError = false,
+  onRetryHistory,
   showWelcome,
   composer,
 }: SectionProps) => {
@@ -35,10 +45,15 @@ export const Section = ({
       <Conversation
         auth={auth}
         messages={messages}
+        hasOlderMessages={hasOlderMessages}
+        isLoadingOlderMessages={isLoadingOlderMessages}
+        onLoadOlderMessages={onLoadOlderMessages}
         isSending={isSending}
         sendError={sendError}
         errorTitle={errorTitle}
         onRetry={onRetry}
+        historyError={historyError}
+        onRetryHistory={onRetryHistory}
         showWelcome={showWelcome}
       />
       <Composer state={composer.state} actions={composer.actions} />

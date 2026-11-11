@@ -9,21 +9,16 @@ import { Section } from "./Section";
 
 interface ChatSessionProps {
   conversationId: string | null;
+  invalidConversationId?: boolean;
   auth: AuthState;
   onAuthRequired: () => void;
-  onConversationUnavailable: () => void;
 }
-
-const getErrorMessage = (error: unknown) =>
-  error instanceof Error && error.message
-    ? error.message
-    : "Something went wrong. Please try again.";
 
 export const ChatSession = ({
   conversationId,
+  invalidConversationId = false,
   auth,
   onAuthRequired,
-  onConversationUnavailable,
 }: ChatSessionProps) => {
   const currentUserId =
     auth.status === "authenticated" ? auth.user.id : null;
@@ -34,7 +29,6 @@ export const ChatSession = ({
     currentUserId,
     conversationId,
     onAuthRequired,
-    onConversationUnavailable,
   );
   const restoredRunIdRef = useRef<string | null>(null);
   const failedRunId =
@@ -64,10 +58,10 @@ export const ChatSession = ({
       ? [{ role: "user", content: runtime.run.content }]
       : [];
   const visibleMessages = [...runtime.messages, ...pendingMessages];
-  const historyError = runtime.historyError
-    ? getErrorMessage(runtime.historyError)
-    : null;
-  const sendError = runtime.error ?? historyError;
+  const historyError =
+    invalidConversationId ||
+    runtime.historyState.status === "error";
+  const sendError = runtime.error;
   const errorTitle = runtime.syncFailed
     ? "Your message was sent, but the conversation did not refresh."
     : runtime.error
@@ -76,7 +70,8 @@ export const ChatSession = ({
   const showWelcome =
     conversationId === null &&
     visibleMessages.length === 0 &&
-    !runtime.historyPending &&
+    runtime.historyState.status !== "loading" &&
+    runtime.historyState.status !== "error" &&
     !sendError;
 
   const composerPhase: ComposerPhase =
@@ -84,8 +79,10 @@ export const ChatSession = ({
       ? "checking"
       : auth.status === "error"
         ? "error"
-        : runtime.historyPending
+        : runtime.historyState.status === "loading"
           ? "checking"
+          : runtime.historyState.status === "error"
+            ? "error"
           : runtime.syncFailed
             ? "error"
           : runtime.isSending
@@ -123,10 +120,23 @@ export const ChatSession = ({
     <Section
       auth={auth}
       messages={visibleMessages}
+      hasOlderMessages={runtime.hasOlderMessages}
+      isLoadingOlderMessages={runtime.isLoadingOlderMessages}
+      onLoadOlderMessages={() => {
+        void runtime.loadOlderMessages();
+      }}
       isSending={runtime.isSending}
       sendError={sendError}
       errorTitle={errorTitle}
       onRetry={runtime.syncFailed ? runtime.retrySync : undefined}
+      historyError={historyError}
+      onRetryHistory={
+        invalidConversationId
+          ? undefined
+          : () => {
+              void runtime.retryHistory();
+            }
+      }
       showWelcome={showWelcome}
       composer={{
         state: { draft, phase: composerPhase },

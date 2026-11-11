@@ -9,6 +9,7 @@ import type {
   ConversationCreateRequest,
   ConversationCreateResponse,
   ConversationListResponse,
+  ConversationMessagesRequest,
   ConversationMessagesResponse,
   MessageSendRequest,
   MessageSendResponse,
@@ -21,11 +22,18 @@ export const getConversationList = async (): Promise<ConversationListResponse> =
 //获取指定对话的messages 记录
 export const getConversationMessageList = async (
   conversationId: string,
-): Promise<ConversationMessagesResponse> =>
-  getJson(
-    `/api/conversations/${conversationId}/messages`,
+  { limit, offset }: ConversationMessagesRequest = {},
+): Promise<ConversationMessagesResponse> => {
+  const params = new URLSearchParams();
+  if (limit !== undefined) params.set("limit", String(limit));
+  if (offset !== undefined) params.set("offset", String(offset));
+  const query = params.size > 0 ? `?${params.toString()}` : "";
+
+  return getJson(
+    `/api/conversations/${conversationId}/messages${query}`,
     conversationMessagesResponse,
   );
+};
 
 //创建会话
 export const createConversation = async (

@@ -148,6 +148,27 @@
   border-radius: 10px;
 }
 
+.loadOlderButton {
+  padding: 7px 12px;
+  color: #4e5a56;
+  font-size: var(--font-size-body-small);
+  font-weight: var(--font-weight-semibold);
+  cursor: pointer;
+  background: #ffffff;
+  border: 1px solid #dde3e0;
+  border-radius: 999px;
+}
+
+.loadOlderButton:disabled {
+  color: #8b9591;
+  cursor: wait;
+}
+
+.loadOlderButton:focus-visible {
+  outline: 2px solid #138d7b;
+  outline-offset: 2px;
+}
+
 .retryButton {
   justify-self: start;
   padding: 6px 10px;

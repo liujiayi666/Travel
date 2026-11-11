@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen } from "@testing-library/react";
 import {
   MemoryRouter,
   Route,
@@ -32,12 +32,19 @@ vi.mock("@/components/common/Modal", () => ({
 vi.mock("@/components/chat", () => ({
   ChatSession: ({
     conversationId,
+    invalidConversationId,
   }: {
     conversationId: string | null;
+    invalidConversationId?: boolean;
   }) => (
-    <p data-testid="conversation-id">
-      {conversationId ?? "new-chat"}
-    </p>
+    <>
+      <p data-testid="conversation-id">
+        {conversationId ?? "new-chat"}
+      </p>
+      <p data-testid="invalid-conversation-id">
+        {String(invalidConversationId)}
+      </p>
+    </>
   ),
 }));
 
@@ -95,16 +102,14 @@ describe("ChatRoute", () => {
     );
   });
 
-  it("redirects an invalid chat value to the new chat page", async () => {
+  it("keeps an invalid chat value and renders a load error", () => {
     renderPage("/chat/invalid");
 
-    await waitFor(() => {
-      expect(screen.getByTestId("location").textContent).toBe(
-        "/chat",
-      );
-      expect(screen.getByTestId("conversation-id")).toHaveTextContent(
-        "new-chat",
-      );
-    });
+    expect(screen.getByTestId("location").textContent).toBe(
+      "/chat/invalid",
+    );
+    expect(
+      screen.getByTestId("invalid-conversation-id"),
+    ).toHaveTextContent("true");
   });
 });

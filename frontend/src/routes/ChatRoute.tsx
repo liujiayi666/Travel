@@ -5,28 +5,22 @@ import {
 import { ChatSession } from "@/components/chat";
 import { isConversationId } from "@/components/chat/chats";
 import { useModal } from "@/components/common/Modal";
-import { Navigate, useParams } from "react-router";
-import { useSessionTransition } from "@/hooks/session";
+import { useParams } from "react-router";
 
 export const ChatRoute = () => {
   const auth = useAuth();
   const { expireSession } = useAuthActions();
   const { conversationId: routeConversationId } = useParams();
-  const { resetConversationState } = useSessionTransition();
   const {
     actions: { open: openModal },
   } = useModal();
 
   const conversationId = routeConversationId ?? null;
+  const invalidConversationId =
+    routeConversationId !== undefined &&
+    !isConversationId(routeConversationId);
   const currentUserId =
     auth.status === "authenticated" ? auth.user.id : null;
-
-  if (
-    routeConversationId !== undefined &&
-    !isConversationId(routeConversationId)
-  ) {
-    return <Navigate to="/chat" replace />;
-  }
 
   const handleAuthRequired = async () => {
     if (auth.status === "authenticated") {
@@ -38,12 +32,10 @@ export const ChatRoute = () => {
   return (
     <ChatSession
       key={`${currentUserId ?? "anonymous"}:${conversationId ?? "new"}`}
-      conversationId={conversationId}
+      conversationId={invalidConversationId ? null : conversationId}
+      invalidConversationId={invalidConversationId}
       auth={auth}
       onAuthRequired={handleAuthRequired}
-      onConversationUnavailable={() =>
-        resetConversationState(conversationId)
-      }
     />
   );
 };

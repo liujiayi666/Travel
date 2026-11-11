@@ -3,6 +3,7 @@ import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+import { ApiError } from "@/shared/api/client";
 import { ChatDraftProvider } from "./draft/ChatDraftProvider";
 import { ChatSession } from "./ChatSession";
 
@@ -27,8 +28,11 @@ const authenticatedState: AuthState = {
 const makeRuntime = (overrides: Record<string, unknown> = {}) => ({
   run: null,
   messages: [],
-  historyPending: false,
-  historyError: null,
+  historyState: { status: "ready" },
+  retryHistory: vi.fn().mockResolvedValue(undefined),
+  hasOlderMessages: false,
+  isLoadingOlderMessages: false,
+  loadOlderMessages: vi.fn().mockResolvedValue(undefined),
   isBusy: false,
   isSending: false,
   syncFailed: false,
@@ -50,7 +54,6 @@ const renderChatSession = (
         conversationId={conversationId}
         auth={auth}
         onAuthRequired={onAuthRequired}
-        onConversationUnavailable={vi.fn()}
       />
     </ChatDraftProvider>,
   );
@@ -102,6 +105,24 @@ describe("ChatSession", () => {
     expect(
       screen.queryByText("Hi, gaga. Where are you thinking of going?"),
     ).not.toBeInTheDocument();
+  });
+
+  it("loads older history on demand", async () => {
+    const user = userEvent.setup();
+    const loadOlderMessages = vi.fn().mockResolvedValue(undefined);
+    runtimeMock.mockReturnValue(
+      makeRuntime({
+        hasOlderMessages: true,
+        loadOlderMessages,
+      }),
+    );
+
+    renderChatSession();
+    await user.click(
+      screen.getByRole("button", { name: "Load older messages" }),
+    );
+
+    expect(loadOlderMessages).toHaveBeenCalledOnce();
   });
 
   it("shows the welcome message only for an empty new chat", () => {
@@ -206,5 +227,54 @@ describe("ChatSession", () => {
     );
 
     expect(runtime.retrySync).toHaveBeenCalledOnce();
+  });
+
+  it("shows one history error state and retries without changing the URL", async () => {
+    const user = userEvent.setup();
+    const retryHistory = vi.fn().mockResolvedValue(undefined);
+    runtimeMock.mockReturnValue(
+      makeRuntime({
+        historyState: {
+          status: "error",
+          error: new ApiError(404, "Conversation not found"),
+        },
+        retryHistory,
+      }),
+    );
+
+    renderChatSession();
+
+    expect(
+      screen.getByText("Could not load this conversation."),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Start planning" }),
+    ).toBeDisabled();
+
+    await user.click(
+      screen.getByRole("button", { name: "Try again" }),
+    );
+
+    expect(retryHistory).toHaveBeenCalledOnce();
+  });
+
+  it("shows the same error without retry for an invalid conversation id", () => {
+    render(
+      <ChatDraftProvider currentUserId="user-1">
+        <ChatSession
+          conversationId={null}
+          invalidConversationId
+          auth={authenticatedState}
+          onAuthRequired={vi.fn()}
+        />
+      </ChatDraftProvider>,
+    );
+
+    expect(
+      screen.getByText("Could not load this conversation."),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "Try again" }),
+    ).not.toBeInTheDocument();
   });
 });

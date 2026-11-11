@@ -58,7 +58,6 @@ const renderAuth = (
     abort: vi.fn(() => {
       useSessionLifecycleStore.getState().enableQueries();
     }),
-    resetConversationState: vi.fn(),
   };
   const Wrapper = ({ children }: { children: ReactNode }) => (
     <QueryClientProvider client={queryClient}>

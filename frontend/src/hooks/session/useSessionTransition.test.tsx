@@ -1,11 +1,10 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, renderHook } from "@testing-library/react";
-import { useLayoutEffect, type ReactNode } from "react";
-import { MemoryRouter, useLocation } from "react-router";
+import type { ReactNode } from "react";
+import { MemoryRouter } from "react-router";
 import { beforeEach, describe, expect, it } from "vitest";
 
 import { authKeys } from "@/data-provider/Auth";
-import { conversationKeys } from "@/data-provider/Conversations";
 import { useChatRuntimeStore } from "@/store/chat";
 import { useSessionLifecycleStore } from "@/store/session";
 import { useSessionTransition } from "./useSessionTransition";
@@ -28,30 +27,15 @@ const createWrapper = () => {
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false } },
   });
-  let latestPath = "";
-
-  const LocationProbe = () => {
-    const location = useLocation();
-
-    useLayoutEffect(() => {
-      latestPath = location.pathname;
-    }, [location.pathname]);
-
-    return null;
-  };
 
   const Wrapper = ({ children }: { children: ReactNode }) => (
     <QueryClientProvider client={queryClient}>
-      <MemoryRouter initialEntries={["/chat/private-conversation"]}>
-        <LocationProbe />
-        {children}
-      </MemoryRouter>
+      <MemoryRouter>{children}</MemoryRouter>
     </QueryClientProvider>
   );
 
   return {
     queryClient,
-    getPath: () => latestPath,
     Wrapper,
   };
 };
@@ -104,36 +88,5 @@ describe("useSessionTransition", () => {
     expect(
       useSessionLifecycleStore.getState().queriesEnabled,
     ).toBe(true);
-  });
-
-  it("resets only conversation state for an unavailable conversation", async () => {
-    const { getPath, queryClient, Wrapper } = createWrapper();
-    queryClient.setQueryData(authKeys.currentUser(), userA);
-    queryClient.setQueryData(
-      conversationKeys.messages("user-a", "conversation-a"),
-      [],
-    );
-    useChatRuntimeStore
-      .getState()
-      .enqueueConversationMessage("conversation-a", "private message");
-
-    const { result } = renderHook(() => useSessionTransition(), {
-      wrapper: Wrapper,
-    });
-
-    act(() => {
-      result.current.resetConversationState("conversation-a");
-    });
-
-    expect(
-      queryClient.getQueryData(authKeys.currentUser()),
-    ).toEqual(userA);
-    expect(
-      queryClient.getQueryData(
-        conversationKeys.messages("user-a", "conversation-a"),
-      ),
-    ).toBeUndefined();
-    expect(useChatRuntimeStore.getState().runsById).toEqual({});
-    expect(getPath()).toBe("/chat");
   });
 });
