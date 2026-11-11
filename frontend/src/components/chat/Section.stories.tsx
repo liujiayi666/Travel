@@ -1,0 +1,63 @@
+import type { Meta, StoryObj } from "@storybook/react-vite";
+import { fn } from "storybook/test";
+
+import { Section } from "./Section";
+
+const meta = {
+  title: "Chat/Section",
+  component: Section,
+  parameters: {
+    layout: "fullscreen",
+  },
+  args: {
+    auth: { status: "anonymous" },
+    composer: {
+      state: {
+        draft: "",
+        phase: "ready",
+      },
+      actions: {
+        changeDraft: fn(),
+        submit: fn(),
+      },
+    },
+  },
+} satisfies Meta<typeof Section>;
+
+export default meta;
+type Story = StoryObj<typeof meta>;
+
+export const Anonymous: Story = {};
+
+export const SignedIn: Story = {
+  args: {
+    auth: {
+      status: "authenticated",
+      user: {
+        id: "user-1",
+        displayName: "gaga",
+        email: "gaga@outlook.com",
+        createdAt: "2026-10-27T00:00:00Z",
+      },
+    },
+  },
+};
+
+export const SessionError: Story = {
+  args: {
+    auth: {
+      status: "error",
+      message: "Unable to restore your session.",
+    },
+    composer: {
+      state: {
+        draft: "",
+        phase: "error",
+      },
+      actions: {
+        changeDraft: fn(),
+        submit: fn(),
+      },
+    },
+  },
+};
