@@ -277,6 +277,8 @@
 - 验收：两个重叠请求只有一个能调用 Provider，另一个返回 409；阻塞式 fake provider 可稳定复现；进程异常后 lease 到期允许恢复；正常完成、Provider 失败和持久化失败都释放占位。
 - 明确不做：Redis 锁、独立任务队列和完整 AgentRun 状态机；这些能力在后续 Agent Loop 阶段再升级。
 
+分页协议 TODO（后续优化）：当前 `GET /api/conversations/{id}/messages` 返回消息数组，前端通过“本页是否满 20 条”推断是否存在更早消息；后续前后端统一改为显式分页响应，至少返回 `items` 与 `has_more`，或返回 `next_offset`/cursor。该调整需要同时覆盖分页边界、乐观消息追加和下一分页失败时保留已加载历史，暂不在当前 runtime 修复中处理。
+
 ### A8 SSE 流式文本 — 后续
 
 - 训练能力：单向流式协议、增量渲染、取消和错误恢复。流式只改变传输方式，不改变 A7 的服务端 Conversation 与上下文语义。
