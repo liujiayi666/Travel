@@ -39,6 +39,7 @@
 | 11 | 2026-11-05 | 完成 A7.2 Conversation 列表与 Message 最近一页读取 API，验证服务端所有权过滤和稳定顺序 |
 | 12 | 2026-11-05 | 路线修正：A7.3 Conversation 创建 → A7.4 前端真实列表/New Chat/历史 → A7.5 消息发送与服务端上下文 |
 | 13 | 2026-11-06 | 完成 A7.3 Conversation 创建 API，明确 title 属于 Conversation、Message 不判断首轮也不修改 title |
+| 14 | 2026-11-11 | 完成 A7.4 前端真实会话列表、New Chat、历史加载与错误/会话竞态处理；后续优化幂等重试和显式分页协议 |
 
 ## 易错本
 
@@ -90,6 +91,9 @@
 - Pydantic Response DTO 的字段类型必须与 ORM 一致：UUID 不能写成 `int`，从 ORM 映射还需要 `from_attributes=True`
 - Query 的默认值必须满足自身约束，例如 `default=0, ge=1` 会让正常请求直接返回 422；参数边界和默认值要成对检查
 - 不要让 Message Service 通过“历史是否为空”判断首轮并顺便修改 Conversation.title；title 是 Conversation 元数据，应由 Conversation 创建请求中的首条 message 生成，Message 只负责发送与保存本轮消息
+- 单条 Conversation 返回 404 只代表当前读取资源不可用，不能据此清除全部 `conversations` query；URL、其他会话缓存和账号状态都不应被连带重置
+- POST 已在服务端提交但响应丢失属于“结果未知”，普通客户端重试可能重复创建 Conversation、重复写入 Message 并再次调用 LLM；必须用稳定幂等键消除歧义
+- 已加载分页数据后的 next-page 错误与首次加载错误语义不同；前者应保留历史并只允许重试更早消息，不能把整页和 Composer 一起禁用
 
 ## Phase 0 — 项目骨架（重写参考骨架）
 
@@ -257,11 +261,20 @@
 - 学到：首条消息 502 时 Conversation 已存在，但本轮消息未提交；前端应提示重试并复用同一 conversationId，避免重复创建会话
 - 面试向：我把 Conversation 元数据与 Message 发送边界拆开，用确定性 title、严格请求 DTO、owner-scoped 查询、事务化消息写入和失败路径测试证明创建与发送各自可重试且不互相污染
 
-#### A7.4 前端真实会话列表、New Chat 与历史加载 — 后续
+#### A7.4 前端真实会话列表、New Chat 与历史加载 — ✓ 2026-11-11（PR #19；c81e06f、6e58120）
 
 - 训练能力：前端只消费应用自己的 Conversation API；Create/List/History 形成可刷新恢复的真实会话入口。
 - 验收：New Chat 用本地首条消息创建 Conversation 并取得 UUID，再把同一内容交给 Message 流程发送；Sidebar 使用真实列表；点击 Conversation 加载对应消息；切换会话不会串数据；发送中的用户消息占位与临时乐观状态只在客户端维护。
 - 明确不做：让 Conversation API 代替 Message API 发送、Provider 调用和 SSE
+- 验收通过：真实浏览器显示登录用户、Recent Chats 和对应历史消息；New Chat 创建成功后先取得 UUID 并导航，再由页面 runtime 发送首条 Message；401、404、刷新恢复和账号切换由测试覆盖
+- 验收通过：后端 90 passed、前端 65 passed；Ruff、Oxlint、production build 和 `check.sh full` 通过
+- 可复查测试：`navigates after creating and sends once for the bound conversation`、`finishes the initial send when the runtime unmounts during creation`、`ignores an in-flight send rejection after session reset`、`loads older history pages in chronological order`、`shows one history error state and retries without changing the URL`、`shows the same error without retry for an invalid conversation id`、`keeps an invalid chat value and renders a load error`
+- 关键代码：`frontend/src/hooks/chat/useChatRuntime.ts`、`frontend/src/store/chat/chatRuntimeStore.ts`、`frontend/src/data-provider/Conversations/queries.ts`、`frontend/src/components/chat/ChatSession.tsx`、`frontend/src/routes/ChatRoute.tsx`
+- 学到：服务端消息历史与客户端 ChatRun 必须分层；服务端仍是持久化真相，run 只表达创建、发送和同步中的临时状态
+- 学到：New Chat 是两阶段提交，`creating-conversation -> awaiting-send -> sending -> syncing-history` 逐段建立资源与消息关系；`claimForSending` 用原子状态迁移防止页面 effect 和后台补发重复执行
+- 学到：错误必须按作用域处理。历史 404 保留 URL 并显示当前页面错误，不清空全部 query；账号切换才使用 session 级 reset，迟到响应还要检查 run identity 以阻止旧 401 影响新账号
+- 学到：分页读取、pending 消息展示和 query 失效是三个不同问题；当前 `limit/offset + 页大小推断` 可工作，但显式 `has_more/next_offset`、幂等重试和失败时直接更新缓存是下一阶段待补边界
+- 面试向：我把 New Chat、历史读取和消息发送拆成服务端资源与客户端运行时两层，用可追踪 ChatRun 状态机、原子 claim、局部错误恢复和会话 fencing 保证快速导航、账号切换及失败重试不会串数据或误伤其他缓存
 
 #### A7.5 发送消息与服务端上下文组装 — 后续
 
@@ -331,7 +344,7 @@
 
 ## 下一步
 
-进入 A7.4：接入真实 Conversation 列表、New Chat 和 history。New Chat 用本地首条消息创建 Conversation，随后用返回的 UUID 调用 Message API；发送中的占位与失败重试状态由前端维护。
+下一步先处理 A7.4 review 暴露的 runtime 一致性优化：显式分页协议、幂等重试、发送成功后缓存更新、next-page 错误隔离和认证 mutation 歧义恢复；完成后再进入 A7.5。
 
 后续顺序：
 
@@ -339,7 +352,7 @@
 2. A7.1：Conversation / Message 持久化模型 — ✓
 3. A7.2：Conversation 列表与消息读取 API — ✓
 4. A7.3：Conversation 创建 API — ✓
-5. A7.4：前端真实会话列表、New Chat 与历史加载
+5. A7.4：前端真实会话列表、New Chat 与历史加载 — ✓
 6. A7.5：发送消息与服务端上下文组装
 7. A7.6：Conversation 并发发送串行化
 8. A8：SSE 流式文本
@@ -355,4 +368,4 @@ Agent 核心能力不延后到文件上传和协作功能之后。每个 A6–A1
 
 测试环境 TODO（后续学习）：在现有本地 hooks 基础上补 GitHub Actions，区分 unit / integration / e2e 的依赖与数据库配置；生产数据库永远不参与测试。
 
-准备：A7.4 先梳理 New Chat 的两段式提交状态（创建 Conversation → 发送首条 Message），再接入列表、history、切换会话和失败重试；乐观消息只在客户端存在。
+准备：A7.4 后续优化先统一前后端分页响应，再引入跨重试稳定的幂等键与直接缓存更新；移动端导航放在独立步骤。

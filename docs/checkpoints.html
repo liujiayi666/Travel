@@ -207,6 +207,20 @@
       </ul>
       <blockquote>把资源创建与消息发送拆成两个职责明确的写边界，用事务、确定性元数据和失败路径测试保证 title、Conversation 与 Message 不会因隐式副作用互相污染。</blockquote>
     </article>
+    <article class="cp">
+      <header>
+        <h2><a href="https://github.com/liujiayi666/Travel/pull/19">PR #19 · feat(conversations): add persisted chat history flow</a></h2>
+      </header>
+      <p class="cp-meta">A7.4 前端真实会话列表、New Chat 与历史加载 · 2026-11-11 · commit c81e06f · 修复 6e58120</p>
+      <ul>
+        <li>TanStack Query 持有服务端 Conversation/Message，Zustand 只保存正在创建、发送或同步的 ChatRun，避免把临时状态和服务端真相混成一份</li>
+        <li>New Chat 采用 <code>creating-conversation → awaiting-send → sending → syncing-history</code> 两阶段提交；创建成功先取得 UUID，再导航并发送首条 Message</li>
+        <li><code>claimForSending</code> 通过原子状态迁移防止页面 effect 和后台补发重复发送；页面离开时仍完成创建后的消息发送，避免空 Conversation</li>
+        <li>历史 404 保留原 URL 并显示局部错误，不再清空全部 Conversation query；只有 session reset 才清理跨账号状态，迟到 401 还要校验 run identity</li>
+        <li>历史读取区分 idle/loading/ready/error，支持显式加载更早消息；当前仍以页大小推断下一页，后续改为 <code>has_more/next_offset</code> 并补幂等重试与直接缓存更新</li>
+      </ul>
+      <blockquote>把服务端持久化历史与客户端发送运行时分层，用可追踪状态机、原子 claim、局部错误恢复和 session fencing，让快速导航、账号切换和失败重试都不会串数据或误伤其他缓存。</blockquote>
+    </article>
   </div>
 </div>
 </body>
