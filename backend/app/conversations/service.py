@@ -1,4 +1,7 @@
 import uuid
+from collections.abc import AsyncGenerator
+from contextlib import aclosing
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import select
@@ -8,7 +11,8 @@ from app.chat.service import answer_message
 from app.conversations.errors import ConversationNotFoundError
 from app.conversations.models import Conversation, Message
 from app.core.config import settings
-from app.llm.contracts import LlmAssistantMessage, LlmMessage, LlmProvider, LlmRequest
+from app.llm.contracts import LlmAssistantMessage, LlmMessage, LlmProvider, LlmRequest, LlmTextDelta
+from app.llm.errors import LlmProviderError
 
 SYSTEM_PROMPT = (
     "You are Travel Copilot, a concise travel planning assistant. "
@@ -16,6 +20,19 @@ SYSTEM_PROMPT = (
 )
 DEFAULT_CONVERSATION_TITLE = "New conversation"
 MAX_TITLE_CHARS = 50
+
+
+@dataclass(frozen=True)
+class PreparedMessageStream:
+    conversation: Conversation
+    request: LlmRequest
+    content: str
+
+
+@dataclass(frozen=True)
+class MessageExchangeCompleted:
+    user_message: Message
+    assistant_message: Message
 
 
 async def list_conversations(
@@ -112,6 +129,7 @@ def build_conversation_title(content: str) -> str:
     return normalized[:MAX_TITLE_CHARS] or DEFAULT_CONVERSATION_TITLE
 
 
+# 用户发送和llm回复 以及会话更新时间 的更新 一起commit
 async def _persist_exchange(
     session: AsyncSession,
     *,
@@ -148,6 +166,37 @@ async def _persist_exchange(
     return user_message, assistant_message
 
 
+async def prepare_message_stream(
+    session: AsyncSession, *, user_id: uuid.UUID, conversation_id: uuid.UUID, content: str
+) -> PreparedMessageStream:
+    conversation = (
+        await session.execute(
+            select(Conversation)
+            .where(Conversation.id == conversation_id)
+            .where(Conversation.user_id == user_id)
+        )
+    ).scalar_one_or_none()
+
+    if conversation is None:
+        raise ConversationNotFoundError()
+
+    history = await _list_recent_messages(
+        session,
+        conversation_id=conversation_id,
+        limit=settings.chat_context_max_messages,
+    )
+
+    await session.commit()
+
+    return PreparedMessageStream(
+        conversation=conversation,
+        request=LlmRequest(
+            messages=build_context(history=history, content=content),
+        ),
+        content=content,
+    )
+
+
 async def create_conversation(
     session: AsyncSession,
     *,
@@ -176,32 +225,41 @@ async def send_message(
     conversation_id: uuid.UUID,
     content: str,
 ) -> LlmAssistantMessage:
-    conversation = (
-        await session.execute(
-            select(Conversation)
-            .where(Conversation.id == conversation_id)
-            .where(Conversation.user_id == user_id)
-        )
-    ).scalar_one_or_none()
 
-    if conversation is None:
-        raise ConversationNotFoundError()
-
-    history = await _list_recent_messages(
-        session,
-        conversation_id=conversation_id,
-        limit=settings.chat_context_max_messages,
+    prepared_message_stream = await prepare_message_stream(
+        session, user_id=user_id, conversation_id=conversation_id, content=content
     )
-    # End the read transaction before waiting on an external Provider.
-    await session.commit()
-    reply = await answer_message(
-        provider,
-        request=LlmRequest(messages=build_context(history=history, content=content)),
-    )
+    reply = await answer_message(provider, request=prepared_message_stream.request)
     await _persist_exchange(
         session,
-        conversation=conversation,
-        content=content,
+        conversation=prepared_message_stream.conversation,
+        content=prepared_message_stream.content,
         assistant_content=reply.content,
     )
     return reply
+
+
+async def stream_message(
+    session: AsyncSession, provider: LlmProvider, *, prepared_message_stream: PreparedMessageStream
+) -> AsyncGenerator[LlmTextDelta | MessageExchangeCompleted, None]:
+    parts: list[str] = []
+    async with aclosing(provider.stream(prepared_message_stream.request)) as provider_stream:
+        async for delta in provider_stream:
+            parts.append(delta.text)
+            yield delta
+
+    assistant_content = "".join(parts)
+    if not assistant_content.strip():
+        raise LlmProviderError("Language model returned no text")
+
+    user_message, assistant_message = await _persist_exchange(
+        session,
+        conversation=prepared_message_stream.conversation,
+        content=prepared_message_stream.content,
+        assistant_content=assistant_content,
+    )
+
+    yield MessageExchangeCompleted(
+        user_message=user_message,
+        assistant_message=assistant_message,
+    )

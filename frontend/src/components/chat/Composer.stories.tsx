@@ -20,10 +20,12 @@ const meta = {
     state: {
       draft: "Plan a quiet five-day trip to Kyoto.",
       phase: "ready",
+      canStop: false,
     },
     actions: {
       changeDraft: fn(),
       submit: fn(),
+      stop: fn(),
     },
   },
 } satisfies Meta<typeof Composer>;
@@ -38,6 +40,7 @@ export const CheckingSession: Story = {
     state: {
       draft: "",
       phase: "checking",
+      canStop: false,
     },
   },
 };
@@ -47,6 +50,7 @@ export const Sending: Story = {
     state: {
       draft: "",
       phase: "sending",
+      canStop: true,
     },
   },
 };
@@ -56,6 +60,7 @@ export const SessionError: Story = {
     state: {
       draft: "Plan a quiet five-day trip to Kyoto.",
       phase: "error",
+      canStop: false,
     },
   },
 };

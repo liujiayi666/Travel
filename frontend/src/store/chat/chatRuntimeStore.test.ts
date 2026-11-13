@@ -57,6 +57,46 @@ describe("chatRuntimeStore", () => {
     });
   });
 
+  it("cancels an active send while preserving its partial text", () => {
+    const runId = useChatRuntimeStore
+      .getState()
+      .enqueueConversationMessage("conversation-1", "继续");
+    const store = useChatRuntimeStore.getState();
+
+    store.claimForSending(runId);
+    store.appendStreamingText(runId, "先去");
+    store.markCancelled(runId);
+
+    expect(useChatRuntimeStore.getState().runsById[runId]).toMatchObject({
+      phase: "cancelled",
+      streamingText: "先去",
+      error: null,
+    });
+  });
+
+  it("replaces a cancelled run when the conversation continues", () => {
+    const store = useChatRuntimeStore.getState();
+    const cancelledRunId = store.enqueueConversationMessage(
+      "conversation-1",
+      "继续",
+    );
+
+    store.claimForSending(cancelledRunId);
+    store.markCancelled(cancelledRunId);
+    const nextRunId = store.enqueueConversationMessage(
+      "conversation-1",
+      "换一个方案",
+    );
+
+    expect(useChatRuntimeStore.getState().runsById).toEqual({
+      [nextRunId]: expect.objectContaining({
+        conversationId: "conversation-1",
+        content: "换一个方案",
+        phase: "awaiting-send",
+      }),
+    });
+  });
+
   it("does not bind a run that was cleared during creation", () => {
     const runId = useChatRuntimeStore
       .getState()

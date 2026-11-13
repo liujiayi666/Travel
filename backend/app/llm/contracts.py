@@ -1,3 +1,4 @@
+from collections.abc import AsyncGenerator
 from dataclasses import dataclass
 from typing import Literal, Protocol
 
@@ -28,5 +29,11 @@ class LlmResponse:
     message: LlmAssistantMessage
 
 
+@dataclass(frozen=True)
+class LlmTextDelta:
+    text: str
+
+
 class LlmProvider(Protocol):
     async def complete(self, request: LlmRequest) -> LlmResponse: ...
+    def stream(self, request: LlmRequest) -> AsyncGenerator[LlmTextDelta, None]: ...

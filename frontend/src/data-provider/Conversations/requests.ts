@@ -1,19 +1,27 @@
-import { getJson, postJson } from "@/shared/api/client";
+import { getJson, httpRequest, postJson } from "@/shared/api/client";
 import {
   conversationListResponseSchema,
   conversationMessagesResponse,
   conversationResponseSchema,
   sendMessageResponse,
+  streamRunCompletedSchema,
+  streamRunFailedSchema,
+  streamRunStartedSchema,
+  streamTextDeltaSchema,
 } from "./schemas";
-import type {
-  ConversationCreateRequest,
-  ConversationCreateResponse,
-  ConversationListResponse,
-  ConversationMessagesRequest,
-  ConversationMessagesResponse,
-  MessageSendRequest,
-  MessageSendResponse,
+import {
+  MessageStreamEventType,
+  type ConversationCreateRequest,
+  type ConversationCreateResponse,
+  type ConversationListResponse,
+  type ConversationMessagesRequest,
+  type ConversationMessagesResponse,
+  type MessageSendRequest,
+  type MessageSendResponse,
+  type MessageStreamEvent,
+  type StreamMessageOptions,
 } from "./types";
+import { parseSseStream, type SseEvent } from "@/shared/api/sseUtils";
 
 //获取历史列表
 export const getConversationList = async (): Promise<ConversationListResponse> =>
@@ -46,8 +54,67 @@ export const sendMessage = async (
   payload: MessageSendRequest,
   conversationId: string,
 ): Promise<MessageSendResponse> =>
-  postJson(
-    `/api/conversations/${conversationId}/messages`,
-    payload,
-    sendMessageResponse,
-  );
+  postJson(`/api/conversations/${conversationId}/messages`, payload, sendMessageResponse);
+
+export const parseMessagesStreamEvent = (sseEvent: SseEvent): MessageStreamEvent | null => {
+  let payload: unknown;
+
+  try {
+    payload = JSON.parse(sseEvent.data);
+  } catch {
+    throw new Error(`Invalid JSON payload for ${sseEvent.event}`);
+  }
+
+  switch (sseEvent.event) {
+    case MessageStreamEventType.RunStarted:
+      return {
+        type: MessageStreamEventType.RunStarted,
+        ...streamRunStartedSchema.parse(payload),
+      };
+    case "text.delta":
+      return {
+        type: "text.delta",
+        ...streamTextDeltaSchema.parse(payload),
+      };
+
+    case "run.completed":
+      return {
+        type: "run.completed",
+        ...streamRunCompletedSchema.parse(payload),
+      };
+
+    case "run.failed":
+      return {
+        type: "run.failed",
+        ...streamRunFailedSchema.parse(payload),
+      };
+    default:
+      return null;
+  }
+};
+
+export async function* streamMessage(
+  payload: MessageSendRequest,
+  conversationId: string,
+  options: StreamMessageOptions,
+): AsyncGenerator<MessageStreamEvent> {
+  const response = await httpRequest(`/api/conversations/${conversationId}/messages/stream`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(payload),
+    signal: options?.signal,
+  });
+
+  if (!response.body) {
+    throw new Error("SSE response has no body");
+  }
+
+  for await (const sseEvent of parseSseStream(response.body)) {
+    const event = parseMessagesStreamEvent(sseEvent);
+    if (event !== null) {
+      yield event;
+    }
+  }
+}

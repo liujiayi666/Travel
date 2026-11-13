@@ -37,7 +37,9 @@ const makeRuntime = (overrides: Record<string, unknown> = {}) => ({
   isSending: false,
   syncFailed: false,
   error: null,
+  streamingText: "",
   submitMessage: vi.fn().mockResolvedValue(true),
+  stop: vi.fn(),
   retrySync: vi.fn(),
   ...overrides,
 });
@@ -61,9 +63,6 @@ const renderChatSession = (
   return {
     onAuthRequired,
     input: screen.getByLabelText("Describe your trip"),
-    submit: screen.getByRole("button", {
-      name: /Start planning|Sending message/,
-    }),
   };
 };
 
@@ -80,7 +79,7 @@ describe("ChatSession", () => {
     const view = renderChatSession();
 
     await user.type(view.input, "杭州周末去哪玩？");
-    await user.click(view.submit);
+    await user.click(screen.getByRole("button", { name: "Start planning" }));
 
     expect(runtime.submitMessage).toHaveBeenCalledWith(
       "杭州周末去哪玩？",
@@ -131,6 +130,9 @@ describe("ChatSession", () => {
     expect(
       screen.getByText("Hi, gaga. Where are you thinking of going?"),
     ).toBeInTheDocument();
+    expect(
+      document.querySelector('[data-chat-layout="centered"]'),
+    ).toBeInTheDocument();
   });
 
   it("does not show the welcome message for an empty existing conversation", () => {
@@ -139,6 +141,9 @@ describe("ChatSession", () => {
     expect(
       screen.queryByText("Hi, gaga. Where are you thinking of going?"),
     ).not.toBeInTheDocument();
+    expect(
+      document.querySelector('[data-chat-layout="centered"]'),
+    ).toBeInTheDocument();
   });
 
   it("renders a pending user message while sending", () => {
@@ -161,8 +166,86 @@ describe("ChatSession", () => {
     expect(screen.getByText("杭州玩两天")).toBeInTheDocument();
     expect(screen.getByRole("status")).toHaveTextContent("Thinking…");
     expect(
-      screen.getByRole("button", { name: "Sending message" }),
-    ).toBeDisabled();
+      screen.getByRole("button", { name: "Stop generating" }),
+    ).toBeEnabled();
+    expect(
+      document.querySelector('[data-chat-layout="centered"]'),
+    ).not.toBeInTheDocument();
+  });
+
+  it("renders streamed assistant text without the waiting placeholder", () => {
+    runtimeMock.mockReturnValue(
+      makeRuntime({
+        run: {
+          id: "run-1",
+          conversationId: "conversation-1",
+          content: "杭州玩两天",
+          phase: "sending",
+          error: null,
+          streamingText: "先去西湖。",
+        },
+        streamingText: "先去西湖。",
+        isBusy: true,
+        isSending: true,
+      }),
+    );
+
+    renderChatSession();
+
+    expect(screen.getByText("杭州玩两天")).toBeInTheDocument();
+    expect(screen.getByText("先去西湖。")).toBeInTheDocument();
+    expect(screen.queryByRole("status")).not.toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Stop generating" }),
+    ).toBeEnabled();
+  });
+
+  it("stops the active stream from the Composer", async () => {
+    const user = userEvent.setup();
+    const runtime = makeRuntime({
+      run: {
+        id: "run-1",
+        conversationId: "conversation-1",
+        content: "杭州玩两天",
+        phase: "sending",
+        error: null,
+        streamingText: "先去西湖。",
+      },
+      streamingText: "先去西湖。",
+      isBusy: true,
+      isSending: true,
+    });
+    runtimeMock.mockReturnValue(runtime);
+    const view = renderChatSession();
+
+    await user.click(screen.getByRole("button", { name: "Stop generating" }));
+
+    expect(runtime.stop).toHaveBeenCalledOnce();
+    expect(runtime.submitMessage).not.toHaveBeenCalled();
+    expect(view.input).toBeDisabled();
+  });
+
+  it("re-enables the Composer after generation is cancelled", () => {
+    runtimeMock.mockReturnValue(
+      makeRuntime({
+        run: {
+          id: "run-1",
+          conversationId: "conversation-1",
+          content: "杭州玩两天",
+          phase: "cancelled",
+          error: null,
+          streamingText: "先去西湖。",
+        },
+        streamingText: "先去西湖。",
+      }),
+    );
+    const view = renderChatSession();
+
+    expect(screen.getByText("先去西湖。")).toBeInTheDocument();
+    expect(view.input).toBeEnabled();
+    expect(
+      screen.queryByRole("button", { name: "Stop generating" }),
+    ).not.toBeInTheDocument();
   });
 
   it("opens authentication without calling the runtime when anonymous", async () => {
@@ -172,7 +255,7 @@ describe("ChatSession", () => {
     const view = renderChatSession({ status: "anonymous" });
 
     await user.type(view.input, "杭州玩两天");
-    await user.click(view.submit);
+    await user.click(screen.getByRole("button", { name: "Start planning" }));
 
     expect(view.onAuthRequired).toHaveBeenCalledOnce();
     expect(runtime.submitMessage).not.toHaveBeenCalled();

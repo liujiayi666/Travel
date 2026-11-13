@@ -1,6 +1,7 @@
 import uuid
-from collections.abc import AsyncIterator
+from collections.abc import AsyncGenerator, AsyncIterator
 from datetime import UTC, datetime, timedelta
+from typing import cast
 
 import pytest
 from pydantic import ValidationError
@@ -15,14 +16,16 @@ from app.conversations.service import (
     DEFAULT_CONVERSATION_TITLE,
     MAX_TITLE_CHARS,
     SYSTEM_PROMPT,
+    PreparedMessageStream,
     build_context,
     build_conversation_title,
     list_conversations,
     list_messages,
     send_message,
+    stream_message,
 )
 from app.core.config import Settings, settings
-from app.llm.contracts import LlmAssistantMessage, LlmRequest, LlmResponse
+from app.llm.contracts import LlmAssistantMessage, LlmMessage, LlmRequest, LlmResponse, LlmTextDelta
 
 
 @pytest.fixture
@@ -113,6 +116,10 @@ async def test_send_message_releases_read_transaction_before_provider_call(
                 transaction_states.append(session.in_transaction())
                 return LlmResponse(message=LlmAssistantMessage(content="reply"))
 
+            async def stream(self, request: LlmRequest) -> AsyncGenerator[LlmTextDelta, None]:
+                transaction_states.append(session.in_transaction())
+                yield LlmTextDelta(text="reply")
+
         await send_message(
             session,
             TransactionProbeProvider(),
@@ -122,6 +129,38 @@ async def test_send_message_releases_read_transaction_before_provider_call(
         )
 
     assert transaction_states == [False]
+
+
+@pytest.mark.anyio
+async def test_stream_message_closes_provider_when_consumer_stops() -> None:
+    class ClosingProbeProvider:
+        closed = False
+
+        async def complete(self, request: LlmRequest) -> LlmResponse:
+            raise AssertionError("Streaming test must not call complete()")
+
+        async def stream(self, request: LlmRequest) -> AsyncGenerator[LlmTextDelta, None]:
+            try:
+                yield LlmTextDelta(text="先去")
+                yield LlmTextDelta(text="西湖")
+            finally:
+                self.closed = True
+
+    provider = ClosingProbeProvider()
+    prepared = PreparedMessageStream(
+        conversation=Conversation(user_id=uuid.uuid4(), title="Stopped stream"),
+        request=LlmRequest(messages=[LlmMessage(role="user", content="杭州玩两天")]),
+        content="杭州玩两天",
+    )
+
+    session = cast(AsyncSession, object())
+    stream = stream_message(session, provider, prepared_message_stream=prepared)
+
+    first_delta = await anext(stream)
+    await stream.aclose()
+
+    assert first_delta == LlmTextDelta(text="先去")
+    assert provider.closed is True
 
 
 @pytest.mark.anyio

@@ -193,12 +193,26 @@ data: {"runId":"run_123","messageId":"msg_456","delta":"东京"}
 
 前端处理原则：
 
-- 使用 `AbortController` 支持停止生成。
+- 使用应用级 `AbortController` registry 支持显式停止生成；Controller 属于 ChatRun，不随 `ChatSession` 组件卸载而销毁。
+- 切换 Conversation 或浏览器标签页不取消生成；用户切走后，ChatRun 继续接收事件并更新全局运行状态，返回原 Conversation 时恢复展示。
+- 只有用户显式 Stop 或浏览器连接真正断开时，才终止当前客户端流并让后端取消上游 LLM 请求。
+- 退出或切换账号只清理客户端用户、缓存和 ChatRun；已经建立的旧账号 stream 可以自然结束，但不能向新账号 UI/缓存写入。批量终止这些后台 stream 是节省 Provider 成本的后续优化，不是 A8 的正确性前置。
+- React 组件卸载只表示当前 UI 不再订阅某个 Conversation，不代表用户取消了生成，不能据此自动 abort。
 - 不要每个字符触发一次整棵组件树更新。
 - 将 delta 放入 buffer，每个动画帧或每 30–50ms 合并提交。
 - 使用稳定的 `messageId` 更新单条消息。
 - 区分 transport error、Agent error 和 tool error。
-- 页面卸载或用户取消时，后端也要取消上游 LLM 请求。
+- 关闭或刷新整个浏览器页面时，浏览器会断开连接；后端必须把 disconnect 传播为上游 LLM 请求取消。
+
+A8 学习级 baseline 的 Stop 语义是“客户端冻结、服务端丢弃”：
+
+- 用户点击 Stop 后，客户端保留已经显示的用户消息和已收到的增量文本，不把整页回滚，也不刷新完整历史。
+- 服务端只在完整生成成功后持久化本轮 user/assistant 消息；中途取消或断开不会保存半轮 exchange。
+- 取消后的临时文本属于当前客户端 ChatRun，刷新页面后消失；再次发送新消息时也会被新 run 替换。
+
+后续需要“完整刷新后仍保留 stopped exchange”时，再引入显式取消握手：Message 增加 completed/cancelled 状态，SSE 增加 `run.cancelled`，新增 `POST /api/runs/{runId}/cancel` 和活跃 Run registry，由服务端原子保存 user 与 partial assistant。该优化不属于当前 A8 baseline。
+
+A8 的正常完成路径允许通过现有 query invalidation 重新读取服务端历史。`run.completed` 中的持久化 Message 已定义完整契约，但直接追加 infinite query 缓存、按 message ID 去重以及“发送成功后完全不执行历史 GET”统一由 A7.4.1 实现。
 
 ### 7.2 WebSocket 的真实用途
 
@@ -335,6 +349,8 @@ A6 先打通“已认证用户输入一条消息 → Provider → 返回完整�
 同一 Conversation 的并发发送也暂未串行化：多个请求可能读取相同旧历史并分别调用 Provider。A7.6 使用数据库 processing lease 让每个 Conversation 同一时刻只有一个发送者，冲突请求返回 409；Provider 调用期间不持有数据库连接，租约到期后允许崩溃恢复。
 
 A8 复用同一 Conversation 语义增加 SSE，流式只改变传输和增量展示方式。A12 进一步治理长会话的分页、保留、摘要压缩与成本，不改变“后端拥有模型上下文”的所有权。
+
+学习路线允许先交付一个有限的 A8 SSE baseline，再补 A7.6 并发串行化与 A7.4.1 幂等重试。该 baseline 必须明确不自动重连、不自动重发，浏览器断线只表示结果未知；只有完成幂等键和事件恢复设计后，才能承诺可恢复的流式运行。
 
 需要流式回答时，第一版可用 POST + `fetch()` 读取 `ReadableStream`。需要自动重连和任务恢复时，再演进为“POST 创建 Run + GET EventSource 订阅事件”。
 
