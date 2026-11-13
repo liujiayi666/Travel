@@ -40,6 +40,8 @@
 | 12 | 2026-11-05 | 路线修正：A7.3 Conversation 创建 → A7.4 前端真实列表/New Chat/历史 → A7.5 消息发送与服务端上下文 |
 | 13 | 2026-11-06 | 完成 A7.3 Conversation 创建 API，明确 title 属于 Conversation、Message 不判断首轮也不修改 title |
 | 14 | 2026-11-11 | 完成 A7.4 前端真实会话列表、New Chat、历史加载与错误/会话竞态处理；后续优化幂等重试和显式分页协议 |
+| 15 | 2026-11-11 | 路线调整：A7.4.1 runtime 一致性延期但不取消；先基于已有 A7.5 基础链路完成一个学习级 A8 SSE 最小切片，之后再做 A7.6 并发串行化与 A7.4.1 事务一致性 |
+| 16 | 2026-11-13 | 完成 A8 SSE 流式文本最小切片、显式 Stop、跨 Conversation 后台继续与异步资源关闭链；后端 99、前端 85 tests、lint 与 build 通过 |
 
 ## 易错本
 
@@ -94,6 +96,11 @@
 - 单条 Conversation 返回 404 只代表当前读取资源不可用，不能据此清除全部 `conversations` query；URL、其他会话缓存和账号状态都不应被连带重置
 - POST 已在服务端提交但响应丢失属于“结果未知”，普通客户端重试可能重复创建 Conversation、重复写入 Message 并再次调用 LLM；必须用稳定幂等键消除歧义
 - 已加载分页数据后的 next-page 错误与首次加载错误语义不同；前者应保留历史并只允许重试更早消息，不能把整页和 Composer 一起禁用
+- SSE 的 HTTP 200 只表示流已经建立，之后不能再改响应状态；完成和失败必须通过应用事件表达，不能把流中错误伪装成新的 HTTP 4xx/5xx
+- `AbortController.abort()` 会先触发客户端取消错误，因此必须先把 ChatRun 原子迁移到 `cancelled`；否则后续 catch 可能把用户主动停止误判为 Provider/网络失败
+- React 组件卸载只结束当前 UI 订阅，不代表用户取消 ChatRun；Controller 和 stream 必须由应用级 runtime 持有，切换 Conversation 不应 abort
+- `AsyncIterator` 不保证有 `aclose()`；代码依赖关闭能力时应声明 `AsyncGenerator`，并用 `aclosing` 逐层传播 Route → Service → Provider 的取消
+- Python `async for` 不会因为外层 async generator 提前关闭就自动关闭内部 iterator；缺少显式关闭链会让上游模型请求在用户 Stop 后继续消耗 token
 
 ## Phase 0 — 项目骨架（重写参考骨架）
 
@@ -276,7 +283,17 @@
 - 学到：分页读取、pending 消息展示和 query 失效是三个不同问题；当前 `limit/offset + 页大小推断` 可工作，但显式 `has_more/next_offset`、幂等重试和失败时直接更新缓存是下一阶段待补边界
 - 面试向：我把 New Chat、历史读取和消息发送拆成服务端资源与客户端运行时两层，用可追踪 ChatRun 状态机、原子 claim、局部错误恢复和会话 fencing 保证快速导航、账号切换及失败重试不会串数据或误伤其他缓存
 
-#### A7.5 发送消息与服务端上下文组装 — 后续
+#### A7.4.1 Runtime 一致性收尾 — 后续（A7.6 后）
+
+- 训练能力：可靠客户端事务。把“请求是否成功”从单次 HTTP 响应提升为可重放的服务端状态，并区分资源真实失败、结果未知和分页局部失败。
+- 目标：Conversation 创建与 Message 发送具备跨重试稳定性；消息历史使用显式分页；POST 成功直接更新缓存；认证 mutation 在响应丢失后通过 `/auth/me` 与 Cookie 真相重新对齐。
+- 协议：`GET /api/conversations/{id}/messages` 返回 `items`、`has_more` 与 `next_offset`，前端只消费服务端游标，不再用“本页是否满 20 条”推断；Conversation 创建与 Message 发送要求 `Idempotency-Key`，相同用户、操作和 key 的相同请求重放原结果，different body 返回稳定冲突；Message 成功响应返回本轮持久化的 user/assistant 两条 Message，供缓存直接追加。
+- 可运行 happy path：同一创建 key 重试只产生一个 Conversation；同一发送 key 重试只调用一次 Provider 且返回同一对 Message；恰好 20 条消息时 `has_more=false`；发送成功后消息与 Conversation 列表缓存立即更新，无需 GET 完整历史。
+- 可运行 failure path：相同 key 改消息内容被拒绝；next-page 失败保留已加载消息、Composer 仍可发送且列表顶部只出现可重试提示；登录/注册响应丢失后 refetch `/auth/me`，以 Cookie 服务端真相恢复用户状态；旧账号迟到响应不能覆盖新账号。
+- 可观察证据：pytest 断言 Provider 调用次数、幂等记录与响应重放；Vitest 断言无限查询缓存、消息 ID 去重、局部错误隔离和认证 refetch；浏览器 Network 证明发送成功没有完整历史 GET。
+- 明确不做：跨 Conversation 并发 lease（A7.6）、SSE（A8）、幂等记录自动 TTL 清理与后台任务队列；当前只保证有限生命周期内可重试，过期治理留给后续运维步骤。
+
+#### A7.5 发送消息与服务端上下文组装 — 进行中（主链路已有，待验收）
 
 - 训练能力：首条和后续消息都走同一个 Message API；后端拥有 Conversation 历史和 LLM 上下文来源，发送时只接受当前 content，在 Service 内完成所有权、历史读取、预算、system prompt 组装和 Provider 调用。
 - 验收：首条和后续消息使用同一 API；Message Service 不判断是否首轮，也不修改 title；只返回本轮新增的 assistant 回复；两消息同一事务提交；失败不留下半轮数据；第二轮请求能引用第一轮；跨用户发送 404；客户端无法提交 history/system/model；历史条数和字符数有硬上限；Provider 请求由 fake provider 断言。
@@ -290,13 +307,28 @@
 - 验收：两个重叠请求只有一个能调用 Provider，另一个返回 409；阻塞式 fake provider 可稳定复现；进程异常后 lease 到期允许恢复；正常完成、Provider 失败和持久化失败都释放占位。
 - 明确不做：Redis 锁、独立任务队列和完整 AgentRun 状态机；这些能力在后续 Agent Loop 阶段再升级。
 
-分页协议 TODO（后续优化）：当前 `GET /api/conversations/{id}/messages` 返回消息数组，前端通过“本页是否满 20 条”推断是否存在更早消息；后续前后端统一改为显式分页响应，至少返回 `items` 与 `has_more`，或返回 `next_offset`/cursor。该调整需要同时覆盖分页边界、乐观消息追加和下一分页失败时保留已加载历史，暂不在当前 runtime 修复中处理。
+分页协议由 A7.4.1 收口：`items + has_more + next_offset` 必须同时覆盖分页边界、缓存追加和下一分页失败时保留已加载历史。
 
-### A8 SSE 流式文本 — 后续
+### A8 SSE 流式文本 — ✓ 2026-11-13（commit aa1d893）
 
-- 训练能力：单向流式协议、增量渲染、取消和错误恢复。流式只改变传输方式，不改变 A7 的服务端 Conversation 与上下文语义。
-- 验收：增量文本、正常结束、Provider 中途失败、用户取消和断线都有稳定状态；前端不解析供应商原始事件
-- 明确不做：工具状态流和高级历史压缩
+- 训练能力：理解“请求完成”和“生成完成”不是同一个时刻；把供应商流事件归一化成应用事件；维护可取消的增量客户端状态。
+- 复用边界：接口为 `POST /api/conversations/{id}/messages/stream`，请求仍只接受当前 `content`；所有权、上下文预算和正常完成后的消息事务复用已有 A7.5 Service 语义。
+- 后端最小闭环：Provider 适配层输出应用自己的 `text delta`；Route 发送 `run.started`、`text.delta`、`run.completed`、`run.failed`。正常完成后 user/assistant 两条消息同事务落库；中途失败不留下半条 exchange。
+- 前端最小闭环：用 POST + `fetch()` 读取 `ReadableStream`，解析应用事件并增量显示 assistant 文本；收到 `run.completed` 后结束流式状态，并通过现有 query invalidation/refetch 与服务端历史对齐；支持显式 `AbortController` 停止。直接向 infinite query 缓存追加持久化消息、按 message ID 去重和免完整 GET 属于 A7.4.1，不作为本步前置。
+- 取消边界：ChatRun 和 Controller 由应用级 runtime 持有；切换 Conversation 或浏览器标签页不取消生成，React 组件卸载也不等于用户取消。只有显式 Stop 或连接真正断开时才取消客户端流，并让后端取消上游 Provider。退出/切换账号只清理旧账号的 UI、查询缓存与运行状态，不要求 A8 主动 abort 已建立的 stream；旧响应不得写入新账号状态，批量停止后台生成作为成本优化后续处理。
+- 当前 Stop 语义：客户端冻结当前用户消息和已收到的 assistant 增量文本，不整体回滚；服务端不持久化半轮 exchange，刷新后取消内容消失。停止只终止本次生成、恢复 Composer，不触发失败提示。
+- 可运行 happy path：fake streaming provider 分块输出“先去/西湖/。”，页面逐步显示完整回答；生成中切到其他 Conversation 再返回，原回答仍继续并能完成；结束后刷新历史仍是同两条消息。
+- 可运行 failure path：流已开始后 Provider 抛错，页面出现明确的流式失败提示而不是无限 loading；数据库没有本轮半成品，用户可重新发送。
+- 可观察证据：pytest 证明事件顺序、正常落库和中途失败回滚；Vitest 证明跨 chunk 事件解析和 delta 合并；浏览器亲眼看到文本逐步出现并能停止。
+- 后续优化（不阻塞 A8）：持久化 stopped exchange。Message 增加 `completed/cancelled` 状态，SSE 增加 `run.cancelled`，新增 `POST /api/runs/{runId}/cancel` 与活跃 Run registry；显式取消后由服务端原子保存 user 和 partial assistant，供刷新历史展示，并默认不把 cancelled assistant 放入后续 LLM context。
+- 明确不做：自动重连、事件回放、幂等重发、多标签页 lease、企业级性能优化和工具事件；这些在后续步骤按需要补。
+
+- 验收通过：后端 99 passed；前端 19 files / 85 tests passed；Oxlint、Ruff、format 与 production build 全部通过；提交钩子再次执行完整前端测试与构建。
+- 可复查测试：`test_stream_message_emits_deltas_and_completed_with_persisted_messages`、`test_stream_message_emits_failed_and_persists_no_partial_exchange`、`test_stream_message_hides_foreign_conversation_before_starting_stream`、`test_provider_streams_non_empty_text_and_closes_upstream`、`test_stream_message_closes_provider_when_consumer_stops`；前端 `parses all application-owned stream event types`、`stops an active stream without syncing history or applying late events`、`keeps an active stream running when the user switches conversation`。
+- 关键代码：`backend/app/llm/openai_compatible_provider.py` 的供应商流适配、`backend/app/conversations/service.py` 的流事件和事务落库、`backend/app/conversations/router.py` 的 SSE Route、`frontend/src/shared/api/sseUtils.ts` 的增量解析、`frontend/src/hooks/chat/useChatRuntime.ts` 的 ChatRun 状态机与取消、`frontend/src/hooks/chat/runStreamControllers.ts` 的应用级 Controller registry。
+- 学到：SSE 是“已返回 200 的单向事件流”，HTTP 状态与生成终态必须分层；供应商 chunk 要在 Provider 边界归一化，业务层只消费应用事件；正常完成才原子落库，失败或 Stop 不保存半轮 exchange。
+- 学到：客户端取消是“状态机 + 传输 + 资源”三件事。先标记 `cancelled` 再 abort，应用级 Controller 让生成跨 UI 卸载继续；后端用嵌套 `aclosing` 保证断开最终关闭 Provider 和 upstream stream。
+- 面试向：我把供应商流归一化为应用 SSE 事件，用显式 ChatRun 状态机和 AbortController 区分用户停止、Provider 失败与页面切换，再通过显式异步关闭链把客户端断开可靠传播到上游模型请求；正常完成才在同一事务中保存本轮两条消息。
 
 ### A9 Tool Contract 与单工具闭环 — 后续
 
@@ -344,7 +376,7 @@
 
 ## 下一步
 
-下一步先处理 A7.4 review 暴露的 runtime 一致性优化：显式分页协议、幂等重试、发送成功后缓存更新、next-page 错误隔离和认证 mutation 歧义恢复；完成后再进入 A7.5。
+下一步实现 A7.6 Conversation 并发发送串行化：用数据库 processing lease 保证同一 Conversation 同时只有一个生成请求，Provider 等待期间不持有数据库连接。A7.4.1 runtime 一致性继续延期。
 
 后续顺序：
 
@@ -354,15 +386,16 @@
 4. A7.3：Conversation 创建 API — ✓
 5. A7.4：前端真实会话列表、New Chat 与历史加载 — ✓
 6. A7.5：发送消息与服务端上下文组装
-7. A7.6：Conversation 并发发送串行化
-8. A8：SSE 流式文本
-9. A9：Tool Contract 与天气单工具闭环
-10. A10：Agent Loop、限额、Trace 与 Eval
-11. A11：RAG 知识检索工具
-12. A12：Conversation 历史治理与高级压缩
-13. A13：长期记忆工具
-14. A14：Trip 权限、私有知识与写入工具
-15. A15：文件、协作与工程化
+7. A8：SSE 学习级最小切片 — ✓
+8. A7.6：Conversation 并发发送串行化
+9. A7.4.1：Runtime 一致性收尾
+10. A9：Tool Contract 与天气单工具闭环
+11. A10：Agent Loop、限额、Trace 与 Eval
+12. A11：RAG 知识检索工具
+13. A12：Conversation 历史治理与高级压缩
+14. A13：长期记忆工具
+15. A14：Trip 权限、私有知识与写入工具
+16. A15：文件、协作与工程化
 
 Agent 核心能力不延后到文件上传和协作功能之后。每个 A6–A15 步骤在开始前由 /tutor 补充具体目标、验收和证据要求；验收通过后才更新为完成。
 

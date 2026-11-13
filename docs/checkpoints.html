@@ -221,6 +221,18 @@
       </ul>
       <blockquote>把服务端持久化历史与客户端发送运行时分层，用可追踪状态机、原子 claim、局部错误恢复和 session fencing，让快速导航、账号切换和失败重试都不会串数据或误伤其他缓存。</blockquote>
     </article>
+    <article class="cp">
+      <header><span class="id">aa1d893</span><time>2026-11-13</time><h2>A8 SSE 流式文本、Stop 与资源关闭链</h2></header>
+      <ul>
+        <li>SSE 建立时返回 200，之后只能通过 <code>run.started</code>、<code>text.delta</code>、<code>run.completed</code> 和 <code>run.failed</code> 表达生成状态，不能中途修改 HTTP 状态码</li>
+        <li>Provider adapter 把供应商 chunk 归一化为应用自己的 <code>LlmTextDelta</code>；业务 Service 只消费应用事件，正常完成后才在同一事务保存 user/assistant 两条 Message</li>
+        <li>前端用 POST + <code>ReadableStream</code> 解析 SSE，以 ChatRun 状态机管理增量文本；Stop 先把状态标记为 <code>cancelled</code>，再 abort 应用级 AbortController，避免误报 Provider 错误</li>
+        <li>React 组件卸载只代表 UI 不再订阅，切换 Conversation 不取消后台生成；显式 Stop 或连接断开才取消 ChatRun</li>
+        <li>Route、Service 与 Provider 通过嵌套 <code>aclosing</code> 传播关闭；专项测试证明消费者停止后 Provider 的 <code>finally</code> 会执行，上游流不会悬挂</li>
+        <li>证据：后端 99 passed，前端 85 tests passed，Ruff、Oxlint、format 与 production build 全部通过</li>
+      </ul>
+      <blockquote>把 SSE 传输、应用事件与 ChatRun 状态分层，再用应用级取消控制和显式异步关闭链连接浏览器 Stop 与上游模型请求；HTTP 200 建立流，业务终态由事件表达。</blockquote>
+    </article>
   </div>
 </div>
 </body>
