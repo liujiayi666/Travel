@@ -42,6 +42,7 @@
 | 14 | 2026-11-11 | 完成 A7.4 前端真实会话列表、New Chat、历史加载与错误/会话竞态处理；后续优化幂等重试和显式分页协议 |
 | 15 | 2026-11-11 | 路线调整：A7.4.1 runtime 一致性延期但不取消；先基于已有 A7.5 基础链路完成一个学习级 A8 SSE 最小切片，之后再做 A7.6 并发串行化与 A7.4.1 事务一致性 |
 | 16 | 2026-11-13 | 完成 A8 SSE 流式文本最小切片、显式 Stop、跨 Conversation 后台继续与异步资源关闭链；后端 99、前端 85 tests、lint 与 build 通过 |
+| 17 | 2026-11-16 | 完成 A7.6 Conversation processing lease 与 token fencing；并发请求 409、过期接管、失败/Stop 释放和迟到写入拒绝均由真实 PostgreSQL 测试覆盖 |
 
 ## 易错本
 
@@ -101,6 +102,11 @@
 - React 组件卸载只结束当前 UI 订阅，不代表用户取消 ChatRun；Controller 和 stream 必须由应用级 runtime 持有，切换 Conversation 不应 abort
 - `AsyncIterator` 不保证有 `aclose()`；代码依赖关闭能力时应声明 `AsyncGenerator`，并用 `aclosing` 逐层传播 Route → Service → Provider 的取消
 - Python `async for` 不会因为外层 async generator 提前关闭就自动关闭内部 iterator；缺少显式关闭链会让上游模型请求在用户 Stop 后继续消耗 token
+- Lease 解决“谁在一段时间内拥有 Conversation”，fencing token 解决“lease 过期后的旧执行者不能继续写入”；只有 lease 仍可能发生旧任务复活覆盖新任务
+- 获取 lease 必须用单条带空闲/过期条件与 `RETURNING` 的原子 UPDATE；先 SELECT 再 UPDATE 会产生典型 check-then-act 竞态
+- SQLAlchemy Session 可能返回 identity map 中的旧对象；行锁读取 fencing 字段时必须 `populate_existing=True`，否则旧 token 会绕过校验
+- 释放 lease 必须同时匹配 `conversation_id` 与 `processing_token`；只按 conversation 清理会让旧 owner 误删新 owner 的租约
+- 调用 Provider 前必须进入 `try/finally`；否则 Provider 在进入释放逻辑前抛错时，Conversation 会被锁到 lease 过期
 
 ## Phase 0 — 项目骨架（重写参考骨架）
 
@@ -299,13 +305,21 @@
 - 验收：首条和后续消息使用同一 API；Message Service 不判断是否首轮，也不修改 title；只返回本轮新增的 assistant 回复；两消息同一事务提交；失败不留下半轮数据；第二轮请求能引用第一轮；跨用户发送 404；客户端无法提交 history/system/model；历史条数和字符数有硬上限；Provider 请求由 fake provider 断言。
 - 明确不做：LLM 总结压缩、Tool 调用和 SSE
 
-#### A7.6 Conversation 并发发送串行化 — 后续
+#### A7.6 Conversation 并发发送串行化 — ✓ 2026-11-16（commit 29e059d）
 
 - 训练能力：同一 Conversation 在多个标签页、设备或快速重复提交下，也必须按唯一顺序读取历史、生成回复和持久化消息。
 - 背景：两个 Message 请求可能同时读到相同旧历史并分别调用 Provider，后发请求可能先生成或先落库，导致回复看不到彼此、消息顺序取决于 Provider 完成顺序。
 - 方案：Conversation 增加 processing token 与过期时间；发送前原子 lease，失败返回 409 并让前端提示重试；Provider 结束后在 finally 中按 token 释放。Provider 等待期间不持有数据库连接。
 - 验收：两个重叠请求只有一个能调用 Provider，另一个返回 409；阻塞式 fake provider 可稳定复现；进程异常后 lease 到期允许恢复；正常完成、Provider 失败和持久化失败都释放占位。
 - 明确不做：Redis 锁、独立任务队列和完整 AgentRun 状态机；这些能力在后续 Agent Loop 阶段再升级。
+
+- 验收通过：后端 107 passed；Ruff、format 与提交钩子全部通过；migration `c3f1a9e2d4b7` 已应用到开发库和 `travel_test`，`alembic check` 无 drift。
+- 可复查测试：`test_prepare_message_stream_rejects_a_concurrent_sender`、`test_concurrent_send_returns_conflict_and_calls_provider_once`、`test_provider_failure_releases_conversation_lease`、`test_persistence_failure_releases_conversation_lease`、`test_consumer_stop_releases_conversation_lease`、`test_expired_lease_can_be_reclaimed`、`test_stale_lease_token_cannot_persist`、`test_stream_reports_fencing_loss_without_persisting_late_response`。
+- 关键代码：`backend/app/conversations/models.py` 的 lease 字段与成对约束、`backend/app/conversations/service.py` 的原子 claim/fenced persist/条件 release、`backend/app/conversations/router.py` 的 `conversation_busy` SSE 终态、`backend/app/conversations/errors.py` 的 HTTP 409 映射。
+- 学到：短临界区只读取并提交 lease/历史，Provider 调用发生在事务和数据库连接释放之后；同一 Conversation 的第二个发送者会得到 409，而不是重复调用模型。
+- 学到：lease 提供可过期所有权，token fencing 提供写权限证明。旧 owner 即使 Provider 迟到，也因 token 不匹配而无法保存消息或清除新 lease。
+- 学到：ORM identity map 是内存缓存，不是数据库真相；竞争字段重新校验必须绕过缓存读取最新行。
+- 面试向：我用数据库行级原子 lease 串行化同一 Conversation 的生成，并用 token fencing 阻止过期任务迟到写入；Provider 期间不持数据库连接，失败、取消和正常完成都通过条件释放或过期回收恢复。
 
 分页协议由 A7.4.1 收口：`items + has_more + next_offset` 必须同时覆盖分页边界、缓存追加和下一分页失败时保留已加载历史。
 
@@ -376,7 +390,7 @@
 
 ## 下一步
 
-下一步实现 A7.6 Conversation 并发发送串行化：用数据库 processing lease 保证同一 Conversation 同时只有一个生成请求，Provider 等待期间不持有数据库连接。A7.4.1 runtime 一致性继续延期。
+下一步实现 A7.4.1 Runtime 一致性收尾：显式分页协议、幂等重试、发送成功直接更新缓存、next-page 错误隔离与认证歧义恢复。
 
 后续顺序：
 
@@ -387,7 +401,7 @@
 5. A7.4：前端真实会话列表、New Chat 与历史加载 — ✓
 6. A7.5：发送消息与服务端上下文组装
 7. A8：SSE 学习级最小切片 — ✓
-8. A7.6：Conversation 并发发送串行化
+8. A7.6：Conversation 并发发送串行化 — ✓
 9. A7.4.1：Runtime 一致性收尾
 10. A9：Tool Contract 与天气单工具闭环
 11. A10：Agent Loop、限额、Trace 与 Eval

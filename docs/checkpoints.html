@@ -233,6 +233,21 @@
       </ul>
       <blockquote>把 SSE 传输、应用事件与 ChatRun 状态分层，再用应用级取消控制和显式异步关闭链连接浏览器 Stop 与上游模型请求；HTTP 200 建立流，业务终态由事件表达。</blockquote>
     </article>
+    <article class="cp">
+      <header>
+        <h2><a href="https://github.com/liujiayi666/Travel/pull/22">PR #22 · feat: add SSE streaming and conversation leases</a></h2>
+      </header>
+      <p class="cp-meta">A7.6 Conversation 并发发送串行化 · 2026-11-16 · commit 29e059d</p>
+      <ul>
+        <li>Conversation 行增加 <code>processing_token</code> 与 <code>processing_expires_at</code>；lease 提供可过期的执行所有权，而不是跨 Provider 调用占住数据库连接</li>
+        <li>获取 lease 使用单条带 ownership、空闲或过期条件和 <code>RETURNING</code> 的原子 UPDATE；先 SELECT 再 UPDATE 会产生 check-then-act 竞态</li>
+        <li>第二个并发发送者返回 HTTP 409；Provider 正常完成、失败、持久化失败和用户 Stop 都会通过条件更新释放 lease</li>
+        <li>提交消息前使用 <code>with_for_update()</code> 和 <code>populate_existing=True</code> 重新校验 token；identity map 中的旧对象不能绕过 fencing</li>
+        <li>旧 token 迟到时不能写消息或清除新 lease；SSE 已建立后以 <code>conversation_busy</code> 失败事件收口，而不是修改 HTTP 状态码</li>
+        <li>证据：后端 107 passed，migration <code>c3f1a9e2d4b7</code>，<code>alembic check</code> 无 drift，阻塞式 Provider 覆盖 409、接管和迟到写入</li>
+      </ul>
+      <blockquote>用数据库原子 lease 串行化同一 Conversation 的生成，再用 fencing token 让过期 owner 失去写入资格；短事务只保护 claim 与 persist，外部模型调用期间不占用数据库连接。</blockquote>
+    </article>
   </div>
 </div>
 </body>
