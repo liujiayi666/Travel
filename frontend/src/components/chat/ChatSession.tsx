@@ -20,21 +20,12 @@ export const ChatSession = ({
   auth,
   onAuthRequired,
 }: ChatSessionProps) => {
-  const currentUserId =
-    auth.status === "authenticated" ? auth.user.id : null;
-  const { draft, changeDraft } = useChatDraft(
-    conversationId ?? "new-chat",
-  );
-  const runtime = useChatRuntime(
-    currentUserId,
-    conversationId,
-    onAuthRequired,
-  );
+  const currentUserId = auth.status === "authenticated" ? auth.user.id : null;
+  const { draft, changeDraft } = useChatDraft(conversationId ?? "new-chat");
+  const runtime = useChatRuntime(currentUserId, conversationId, onAuthRequired);
   const restoredRunIdRef = useRef<string | null>(null);
-  const failedRunId =
-    runtime.run?.phase === "failed" ? runtime.run.id : null;
-  const failedRunContent =
-    runtime.run?.phase === "failed" ? runtime.run.content : null;
+  const failedRunId = runtime.run?.phase === "failed" ? runtime.run.id : null;
+  const failedRunContent = runtime.run?.phase === "failed" ? runtime.run.content : null;
 
   const restoreDraft = useEffectEvent((content: string) => {
     changeDraft(content);
@@ -53,14 +44,21 @@ export const ChatSession = ({
     restoreDraft(failedRunContent);
   }, [failedRunContent, failedRunId]);
 
-  const pendingMessages: ChatMessage[] =
-    runtime.run && runtime.run.phase !== "syncing-history"
-      ? [{ role: "user", content: runtime.run.content }]
-      : [];
+  const pendingMessages: ChatMessage[] = [];
+  if (runtime.run && runtime.run.phase !== "syncing-history") {
+    pendingMessages.push({
+      role: "user",
+      content: runtime.run.content,
+    });
+    if (runtime.streamingText.length > 0) {
+      pendingMessages.push({
+        role: "assistant",
+        content: runtime.streamingText,
+      });
+    }
+  }
   const visibleMessages = [...runtime.messages, ...pendingMessages];
-  const historyError =
-    invalidConversationId ||
-    runtime.historyState.status === "error";
+  const historyError = invalidConversationId || runtime.historyState.status === "error";
   const sendError = runtime.error;
   const errorTitle = runtime.syncFailed
     ? "Your message was sent, but the conversation did not refresh."
@@ -83,11 +81,11 @@ export const ChatSession = ({
           ? "checking"
           : runtime.historyState.status === "error"
             ? "error"
-          : runtime.syncFailed
-            ? "error"
-          : runtime.isSending
-            ? "sending"
-            : "ready";
+            : runtime.syncFailed
+              ? "error"
+              : runtime.isSending
+                ? "sending"
+                : "ready";
 
   const submit = async (input: string) => {
     const content = input.trim();
@@ -125,7 +123,7 @@ export const ChatSession = ({
       onLoadOlderMessages={() => {
         void runtime.loadOlderMessages();
       }}
-      isSending={runtime.isSending}
+      isSending={runtime.isSending && runtime.streamingText.length === 0}
       sendError={sendError}
       errorTitle={errorTitle}
       onRetry={runtime.syncFailed ? runtime.retrySync : undefined}
@@ -139,8 +137,16 @@ export const ChatSession = ({
       }
       showWelcome={showWelcome}
       composer={{
-        state: { draft, phase: composerPhase },
-        actions: { changeDraft, submit },
+        state: {
+          draft,
+          phase: composerPhase,
+          canStop: runtime.run?.phase === "sending",
+        },
+        actions: {
+          changeDraft,
+          submit,
+          stop: runtime.stop,
+        },
       }}
     />
   );

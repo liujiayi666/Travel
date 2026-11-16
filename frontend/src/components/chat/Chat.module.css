@@ -69,9 +69,24 @@
   padding: 32px;
   align-items: center;
   flex-direction: column;
-  justify-content: safe center;
+  justify-content: flex-start;
   gap: 16px;
   overflow-y: auto;
+  scrollbar-gutter: stable;
+}
+
+.centeredSection {
+  justify-content: center;
+}
+
+.centeredSection .header {
+  display: none;
+}
+
+.centeredSection .conversation {
+  flex: 0 0 auto;
+  padding: 0 32px;
+  overflow: visible;
 }
 
 .assistantMessage {
@@ -127,7 +142,7 @@
 }
 
 .status {
-  margin-top: 18px;
+  margin-top: 2px;
   color: #69736f;
   font-size: var(--font-size-body-small);
   line-height: var(--line-height-body-small);
@@ -185,6 +200,10 @@
   padding: 0 32px 24px;
 }
 
+.centeredSection .composerArea {
+  padding: 28px 32px 0;
+}
+
 .composer {
   display: flex;
   width: min(620px, 100%);
@@ -201,6 +220,12 @@
   border: 1px solid #dde3e0;
   border-radius: 16px;
   box-shadow: 0 10px 30px -20px rgba(23, 32, 29, 0.5);
+}
+
+.composer:focus-within {
+  border-color: var(--color-brand);
+  outline: 2px solid var(--color-brand);
+  outline-offset: 2px;
 }
 
 .composer textarea {
@@ -220,9 +245,7 @@
 }
 
 .composer textarea:focus-visible {
-  outline: 2px solid #138d7b;
-  outline-offset: 2px;
-  border-radius: 6px;
+  outline: none;
 }
 
 .composer button {
@@ -256,7 +279,15 @@
     padding: 20px;
   }
 
+  .centeredSection .conversation {
+    padding: 0 20px;
+  }
+
   .composerArea {
     padding: 0 16px 20px;
+  }
+
+  .centeredSection .composerArea {
+    padding: 24px 16px 0;
   }
 }

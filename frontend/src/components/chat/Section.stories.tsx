@@ -15,10 +15,12 @@ const meta = {
       state: {
         draft: "",
         phase: "ready",
+        canStop: false,
       },
       actions: {
         changeDraft: fn(),
         submit: fn(),
+        stop: fn(),
       },
     },
   },
@@ -53,10 +55,12 @@ export const SessionError: Story = {
       state: {
         draft: "",
         phase: "error",
+        canStop: false,
       },
       actions: {
         changeDraft: fn(),
         submit: fn(),
+        stop: fn(),
       },
     },
   },

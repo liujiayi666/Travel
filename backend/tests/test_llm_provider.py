@@ -32,6 +32,44 @@ def make_completion(content: str | None):
     return SimpleNamespace(choices=[SimpleNamespace(message=message)])
 
 
+def make_streaming_chunk(content: str | None):
+    delta = SimpleNamespace(content=content)
+    return SimpleNamespace(choices=[SimpleNamespace(delta=delta)])
+
+
+class FakeAsyncStream:
+    def __init__(
+        self,
+        contents: list[str | None],
+        *,
+        error: Exception | None = None,
+        error_after: int | None = None,
+    ) -> None:
+        self.contents = contents
+        self.error = error
+        self.error_after = error_after
+        self.index = 0
+        self.closed = False
+
+    def __aiter__(self) -> "FakeAsyncStream":
+        return self
+
+    async def __anext__(self):
+        if self.index >= len(self.contents):
+            if self.error is not None and self.error_after == self.index:
+                error = self.error
+                self.error = None
+                raise error
+            raise StopAsyncIteration
+
+        content = self.contents[self.index]
+        self.index += 1
+        return make_streaming_chunk(content)
+
+    async def close(self) -> None:
+        self.closed = True
+
+
 def make_provider(client: AsyncOpenAI) -> OpenAICompatibleProvider:
     return OpenAICompatibleProvider(client, "test-model", MAX_TOKENS)
 
@@ -136,3 +174,70 @@ async def test_provider_maps_sdk_api_error() -> None:
         await provider.complete(LlmRequest(messages=[make_message()]))
 
     assert exc_info.value.__cause__ is sdk_error
+
+
+@pytest.mark.anyio
+async def test_provider_streams_non_empty_text_and_closes_upstream() -> None:
+    upstream = FakeAsyncStream(["先去", None, "西湖", "", "。"])
+    client, create = make_client(upstream)
+    provider = make_provider(client)
+    request = LlmRequest(messages=[make_message("杭州玩两天")])
+
+    deltas = [delta.text async for delta in provider.stream(request)]
+
+    assert deltas == ["先去", "西湖", "。"]
+    assert upstream.closed is True
+    create.assert_awaited_once()
+    call = create.await_args.kwargs
+    assert call["model"] == "test-model"
+    assert call["max_tokens"] == MAX_TOKENS
+    assert call["stream"] is True
+    assert call["messages"] == [{"role": "user", "content": "杭州玩两天"}]
+
+
+@pytest.mark.anyio
+async def test_provider_maps_midstream_api_error_and_closes_upstream() -> None:
+    sdk_error = APIError("upstream failed", request=cast(Any, None), body=None)
+    upstream = FakeAsyncStream(["先去"], error=sdk_error, error_after=1)
+    client, _ = make_client(upstream)
+    provider = make_provider(client)
+    received: list[str] = []
+
+    with pytest.raises(LlmProviderError) as exc_info:
+        async for delta in provider.stream(
+            LlmRequest(messages=[make_message("杭州玩两天")]),
+        ):
+            received.append(delta.text)
+
+    assert received == ["先去"]
+    assert exc_info.value.__cause__ is sdk_error
+    assert upstream.closed is True
+
+
+@pytest.mark.anyio
+async def test_provider_rejects_stream_without_usable_text() -> None:
+    upstream = FakeAsyncStream([None, ""])
+    client, _ = make_client(upstream)
+    provider = make_provider(client)
+
+    with pytest.raises(LlmProviderError, match="no text"):
+        async for _ in provider.stream(
+            LlmRequest(messages=[make_message("杭州玩两天")]),
+        ):
+            pass
+
+    assert upstream.closed is True
+
+
+@pytest.mark.anyio
+async def test_provider_closes_upstream_when_consumer_stops() -> None:
+    upstream = FakeAsyncStream(["先去", "西湖"])
+    client, _ = make_client(upstream)
+    provider = make_provider(client)
+    stream = provider.stream(LlmRequest(messages=[make_message("杭州玩两天")]))
+
+    first_delta = await anext(stream)
+    await stream.aclose()
+
+    assert first_delta.text == "先去"
+    assert upstream.closed is True

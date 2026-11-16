@@ -24,9 +24,27 @@ class Conversation(Base):
         DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
     )
 
+    processing_token: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid,
+        nullable=True,
+    )
+
+    processing_expires_at: Mapped[datetime.datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+
     __table_args__ = (
         Index("ix_user_id_updated_at_id", "user_id", "updated_at", "id"),
         CheckConstraint("btrim(title) <> ''", name="title_not_empty"),
+        CheckConstraint(
+            """
+            (processing_token IS NULL AND processing_expires_at IS NULL)
+            OR
+            (processing_token IS NOT NULL AND processing_expires_at IS NOT NULL)
+            """,
+            name="processing_lease_pair",
+        ),
     )
 
 

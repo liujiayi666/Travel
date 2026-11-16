@@ -38,8 +38,19 @@ export const Section = ({
   showWelcome,
   composer,
 }: SectionProps) => {
+  const hasCenteredEmptyState =
+    messages.length === 0 &&
+    !historyError &&
+    !sendError &&
+    !isSending;
+
   return (
-    <section className={styles.section}>
+    <section
+      className={`${styles.section} ${
+        hasCenteredEmptyState ? styles.centeredSection : ""
+      }`}
+      data-chat-layout={hasCenteredEmptyState ? "centered" : "conversation"}
+    >
       <header className={styles.header}></header>
 
       <Conversation

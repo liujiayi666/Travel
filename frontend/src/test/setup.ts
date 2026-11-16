@@ -25,3 +25,9 @@ HTMLDialogElement.prototype.showModal = function showModal() {
 HTMLDialogElement.prototype.close = function close() {
   this.open = false;
 };
+
+Object.defineProperty(HTMLElement.prototype, "scrollTo", {
+  configurable: true,
+  writable: true,
+  value: vi.fn(),
+});

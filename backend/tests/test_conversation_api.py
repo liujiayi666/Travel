@@ -1,12 +1,15 @@
+import asyncio
+import json
 import uuid
-from collections.abc import AsyncIterator
+from collections.abc import AsyncGenerator, AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
+from typing import Any
 
 import pytest
 from httpx import ASGITransport, AsyncClient
-from sqlalchemy import delete
+from sqlalchemy import delete, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
 
@@ -20,6 +23,7 @@ from app.llm.contracts import (
     LlmProvider,
     LlmRequest,
     LlmResponse,
+    LlmTextDelta,
 )
 from app.llm.dependencies import get_llm_provider
 from app.llm.errors import LlmProviderError
@@ -105,6 +109,90 @@ class FakeConversationProvider:
         content = self.contents[min(len(self.requests) - 1, len(self.contents) - 1)]
         return LlmResponse(message=LlmAssistantMessage(content=content))
 
+    async def stream(self, request: LlmRequest) -> AsyncGenerator[LlmTextDelta, None]:
+        self.requests.append(request)
+        if self.error is not None:
+            raise self.error
+        for content in self.contents:
+            yield LlmTextDelta(text=content)
+
+
+class FakeStreamingConversationProvider:
+    def __init__(
+        self,
+        contents: list[str],
+        *,
+        error: Exception | None = None,
+    ) -> None:
+        self.contents = contents
+        self.error = error
+        self.requests: list[LlmRequest] = []
+
+    async def complete(self, request: LlmRequest) -> LlmResponse:
+        raise AssertionError("Streaming endpoint must not call complete()")
+
+    async def stream(self, request: LlmRequest) -> AsyncGenerator[LlmTextDelta, None]:
+        self.requests.append(request)
+        for content in self.contents:
+            yield LlmTextDelta(text=content)
+
+        if self.error is not None:
+            raise self.error
+
+
+class BlockingConversationProvider:
+    def __init__(self) -> None:
+        self.requests: list[LlmRequest] = []
+        self.started = asyncio.Event()
+        self.release = asyncio.Event()
+
+    async def complete(self, request: LlmRequest) -> LlmResponse:
+        self.requests.append(request)
+        self.started.set()
+        await self.release.wait()
+        return LlmResponse(message=LlmAssistantMessage(content=FIRST_REPLY))
+
+    async def stream(self, request: LlmRequest) -> AsyncGenerator[LlmTextDelta, None]:
+        raise AssertionError("Concurrent-send test must use complete()")
+        yield LlmTextDelta(text="unreachable")
+
+
+class TakeoverStreamingProvider:
+    def __init__(self) -> None:
+        self.requests: list[LlmRequest] = []
+        self.started = asyncio.Event()
+        self.release = asyncio.Event()
+
+    async def complete(self, request: LlmRequest) -> LlmResponse:
+        raise AssertionError("Takeover test must use stream()")
+
+    async def stream(self, request: LlmRequest) -> AsyncGenerator[LlmTextDelta, None]:
+        self.requests.append(request)
+        self.started.set()
+        yield LlmTextDelta(text="先去")
+        await self.release.wait()
+        yield LlmTextDelta(text="西湖")
+
+
+def parse_sse_events(body: str) -> list[tuple[str, dict[str, Any]]]:
+    events: list[tuple[str, dict[str, Any]]] = []
+
+    for frame in body.split("\n\n"):
+        if not frame.strip():
+            continue
+
+        event_name = ""
+        data_lines: list[str] = []
+        for line in frame.splitlines():
+            if line.startswith("event:"):
+                event_name = line.removeprefix("event:").strip()
+            elif line.startswith("data:"):
+                data_lines.append(line.removeprefix("data:").strip())
+
+        events.append((event_name, json.loads("\n".join(data_lines))))
+
+    return events
+
 
 async def persist_user(
     session_factory: async_sessionmaker[AsyncSession],
@@ -125,6 +213,7 @@ async def persist_user(
         ("GET", f"/api/conversations/{uuid.uuid4()}/messages"),
         ("POST", "/api/conversations"),
         ("POST", f"/api/conversations/{uuid.uuid4()}/messages"),
+        ("POST", f"/api/conversations/{uuid.uuid4()}/messages/stream"),
     ],
 )
 async def test_conversation_api_requires_authentication(
@@ -133,9 +222,7 @@ async def test_conversation_api_requires_authentication(
     path: str,
 ) -> None:
     async with make_client(session_factory, user_id=None) as client:
-        payload = (
-            {"content": FIRST_MESSAGE} if path.endswith("/messages") else {"message": FIRST_MESSAGE}
-        )
+        payload = {"content": FIRST_MESSAGE} if "/messages" in path else {"message": FIRST_MESSAGE}
         response = await client.request(
             method,
             path,
@@ -300,6 +387,234 @@ async def test_create_conversation_returns_only_conversation_without_calling_pro
     assert list_response.status_code == 200
     assert [item["id"] for item in list_response.json()] == [conversation["id"]]
     assert provider.requests == []
+
+
+@pytest.mark.anyio
+async def test_stream_message_emits_deltas_and_completed_with_persisted_messages(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    user_id = await persist_user(session_factory, "Streaming sender")
+    provider = FakeStreamingConversationProvider(["先去", "西湖", "。"])
+
+    async with session_factory() as session:
+        conversation = Conversation(user_id=user_id, title=FIRST_MESSAGE)
+        session.add(conversation)
+        await session.commit()
+
+    async with make_client(
+        session_factory,
+        user_id=user_id,
+        provider=provider,
+    ) as client:
+        response = await client.post(
+            f"/api/conversations/{conversation.id}/messages/stream",
+            json={"content": FIRST_MESSAGE},
+            headers={"Origin": settings.frontend_origin},
+        )
+        history_response = await client.get(
+            f"/api/conversations/{conversation.id}/messages",
+        )
+
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/event-stream")
+    events = parse_sse_events(response.text)
+    assert [name for name, _ in events] == [
+        "run.started",
+        "text.delta",
+        "text.delta",
+        "text.delta",
+        "run.completed",
+    ]
+    assert (
+        "".join(str(data["delta"]) for name, data in events if name == "text.delta") == "先去西湖。"
+    )
+
+    run_ids = {data["runId"] for _, data in events}
+    assert len(run_ids) == 1
+
+    completed = events[-1][1]
+    user_message = completed["userMessage"]
+    assistant_message = completed["assistantMessage"]
+    assert user_message["role"] == "user"
+    assert user_message["content"] == FIRST_MESSAGE
+    assert assistant_message["role"] == "assistant"
+    assert assistant_message["content"] == "先去西湖。"
+
+    history = history_response.json()
+    assert [(message["role"], message["content"]) for message in history] == [
+        ("user", FIRST_MESSAGE),
+        ("assistant", "先去西湖。"),
+    ]
+    assert [message["id"] for message in history] == [
+        user_message["id"],
+        assistant_message["id"],
+    ]
+    assert len(provider.requests) == 1
+
+
+@pytest.mark.anyio
+async def test_stream_message_emits_failed_and_persists_no_partial_exchange(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    user_id = await persist_user(session_factory, "Streaming failure")
+    provider = FakeStreamingConversationProvider(
+        ["先去"],
+        error=LlmProviderError("upstream failed"),
+    )
+
+    async with session_factory() as session:
+        conversation = Conversation(user_id=user_id, title=FIRST_MESSAGE)
+        session.add(conversation)
+        await session.commit()
+
+    async with make_client(
+        session_factory,
+        user_id=user_id,
+        provider=provider,
+    ) as client:
+        response = await client.post(
+            f"/api/conversations/{conversation.id}/messages/stream",
+            json={"content": FIRST_MESSAGE},
+            headers={"Origin": settings.frontend_origin},
+        )
+        history_response = await client.get(
+            f"/api/conversations/{conversation.id}/messages",
+        )
+
+    assert response.status_code == 200
+    events = parse_sse_events(response.text)
+    assert [name for name, _ in events] == [
+        "run.started",
+        "text.delta",
+        "run.failed",
+    ]
+    assert events[1][1]["delta"] == "先去"
+    assert events[-1][1]["code"] == "provider_error"
+    assert history_response.json() == []
+
+
+@pytest.mark.anyio
+async def test_stream_message_hides_foreign_conversation_before_starting_stream(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    owner_id = await persist_user(session_factory, "Streaming owner")
+    attacker_id = await persist_user(session_factory, "Streaming attacker")
+    provider = FakeStreamingConversationProvider(["private"])
+
+    async with session_factory() as session:
+        conversation = Conversation(user_id=owner_id, title="Private")
+        session.add(conversation)
+        await session.commit()
+
+    async with make_client(
+        session_factory,
+        user_id=attacker_id,
+        provider=provider,
+    ) as client:
+        response = await client.post(
+            f"/api/conversations/{conversation.id}/messages/stream",
+            json={"content": FIRST_MESSAGE},
+            headers={"Origin": settings.frontend_origin},
+        )
+
+    assert response.status_code == 404
+    assert response.json() == {"detail": "Conversation not found"}
+    assert provider.requests == []
+
+
+@pytest.mark.anyio
+async def test_concurrent_send_returns_conflict_and_calls_provider_once(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    user_id = await persist_user(session_factory, "Concurrent sender")
+    provider = BlockingConversationProvider()
+
+    async with session_factory() as session:
+        conversation = Conversation(user_id=user_id, title=FIRST_MESSAGE)
+        session.add(conversation)
+        await session.commit()
+
+    async with make_client(
+        session_factory,
+        user_id=user_id,
+        provider=provider,
+    ) as client:
+        first_request = asyncio.create_task(
+            client.post(
+                f"/api/conversations/{conversation.id}/messages",
+                json={"content": FIRST_MESSAGE},
+                headers={"Origin": settings.frontend_origin},
+            )
+        )
+        await asyncio.wait_for(provider.started.wait(), timeout=5)
+
+        second_response = await client.post(
+            f"/api/conversations/{conversation.id}/messages",
+            json={"content": FOLLOW_UP_CONTENT},
+            headers={"Origin": settings.frontend_origin},
+        )
+        assert second_response.status_code == 409
+        assert second_response.json() == {"detail": "Conversation is busy"}
+
+        provider.release.set()
+        first_response = await first_request
+
+    assert first_response.status_code == 200
+    assert len(provider.requests) == 1
+
+
+@pytest.mark.anyio
+async def test_stream_reports_fencing_loss_without_persisting_late_response(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    user_id = await persist_user(session_factory, "Stream takeover")
+    provider = TakeoverStreamingProvider()
+
+    async with session_factory() as session:
+        conversation = Conversation(user_id=user_id, title="Stream takeover")
+        session.add(conversation)
+        await session.commit()
+        conversation_id = conversation.id
+
+    async with make_client(
+        session_factory,
+        user_id=user_id,
+        provider=provider,
+    ) as client:
+        stream_request = asyncio.create_task(
+            client.post(
+                f"/api/conversations/{conversation_id}/messages/stream",
+                json={"content": FIRST_MESSAGE},
+                headers={"Origin": settings.frontend_origin},
+            )
+        )
+        await asyncio.wait_for(provider.started.wait(), timeout=5)
+
+        async with session_factory() as takeover_session:
+            await takeover_session.execute(
+                update(Conversation)
+                .where(Conversation.id == conversation_id)
+                .values(
+                    processing_token=uuid.uuid4(),
+                    processing_expires_at=datetime.now(UTC) + timedelta(seconds=30),
+                )
+            )
+            await takeover_session.commit()
+
+        provider.release.set()
+        response = await stream_request
+        history_response = await client.get(
+            f"/api/conversations/{conversation_id}/messages",
+        )
+
+    assert response.status_code == 200
+    events = parse_sse_events(response.text)
+    assert events[0][0] == "run.started"
+    assert any(name == "text.delta" for name, _ in events)
+    assert events[-1][0] == "run.failed"
+    assert events[-1][1]["code"] == "conversation_busy"
+    assert history_response.json() == []
+    assert len(provider.requests) == 1
 
 
 @pytest.mark.anyio

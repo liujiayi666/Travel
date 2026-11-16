@@ -1,4 +1,5 @@
 import uuid
+from collections.abc import AsyncGenerator
 from types import SimpleNamespace
 
 import pytest
@@ -13,6 +14,7 @@ from app.llm.contracts import (
     LlmProvider,
     LlmRequest,
     LlmResponse,
+    LlmTextDelta,
 )
 from app.llm.errors import (
     LlmInvalidRequestError,
@@ -40,6 +42,10 @@ class FakeProvider:
         if self.response is None:
             raise AssertionError("FakeProvider has neither response nor error")
         return self.response
+
+    async def stream(self, request: LlmRequest) -> AsyncGenerator[LlmTextDelta, None]:
+        response = await self.complete(request)
+        yield LlmTextDelta(text=response.message.content)
 
 
 def make_client(

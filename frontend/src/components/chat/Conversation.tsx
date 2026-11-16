@@ -1,3 +1,5 @@
+import { useLayoutEffect, useRef } from "react";
+
 import type { AuthState } from "@/components/auth";
 import styles from "./Chat.module.css";
 import type { ChatMessage } from "./types";
@@ -31,8 +33,38 @@ export const Conversation = ({
   onRetryHistory,
   showWelcome = true,
 }: ConversationProps) => {
+  const conversationRef = useRef<HTMLElement>(null);
+  const latestMessage = messages.at(-1);
+  const latestMessageKey = latestMessage
+    ? latestMessage.id ?? `${latestMessage.role}:${latestMessage.content}`
+    : null;
+  const previousLatestMessageKeyRef = useRef<string | null>(null);
+
+  useLayoutEffect(() => {
+    const previousLatestMessageKey = previousLatestMessageKeyRef.current;
+    previousLatestMessageKeyRef.current = latestMessageKey;
+
+    if (
+      latestMessageKey === null ||
+      previousLatestMessageKey === latestMessageKey ||
+      isLoadingOlderMessages
+    ) {
+      return;
+    }
+
+    const conversation = conversationRef.current;
+    conversation?.scrollTo({
+      top: conversation.scrollHeight,
+      behavior: "auto",
+    });
+  }, [isLoadingOlderMessages, latestMessageKey]);
+
   return (
-    <section className={styles.conversation} aria-live="polite">
+    <section
+      ref={conversationRef}
+      className={styles.conversation}
+      aria-live="polite"
+    >
       {historyError ? (
         <div className={styles.errorNotice} role="alert">
           <strong>Could not load this conversation.</strong>

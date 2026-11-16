@@ -9,8 +9,7 @@ export const conversationsRequestSchema = z.object({
   offset: z.int().optional(),
 });
 
-export const conversationMessagesRequestSchema =
-  conversationsRequestSchema;
+export const conversationMessagesRequestSchema = conversationsRequestSchema;
 
 export const conversationResponseSchema = z
   .object({
@@ -40,18 +39,40 @@ export const sendMessageResponse = z.object({
   message: sendMessageResponseMessage,
 });
 
-export const conversationMessagesResponse = z.array(
-  z
-    .object({
-      id: z.string(),
-      conversation_id: z.string(),
-      role: z.union([z.literal("assistant"), z.literal("user")]),
-      content: z.string(),
-      created_at: z.string(),
-    })
-    .transform(({ conversation_id, created_at, ...reset }) => ({
-      ...reset,
-      conversationId: conversation_id,
-      createdAt: created_at,
-    })),
-);
+export const conversationMessageResponseSchema = z
+  .object({
+    id: z.string(),
+    conversation_id: z.string(),
+    role: z.union([z.literal("assistant"), z.literal("user")]),
+    content: z.string(),
+    created_at: z.string(),
+  })
+  .transform(({ conversation_id, created_at, ...reset }) => ({
+    ...reset,
+    conversationId: conversation_id,
+    createdAt: created_at,
+  }));
+
+export const conversationMessagesResponse = z.array(conversationMessageResponseSchema);
+
+export const streamRunStartedSchema = z.object({
+  runId: z.string(),
+  conversationId: z.string(),
+});
+
+export const streamTextDeltaSchema = z.object({
+  runId: z.string(),
+  delta: z.string(),
+});
+
+export const streamRunCompletedSchema = z.object({
+  runId: z.string(),
+  userMessage: conversationMessageResponseSchema,
+  assistantMessage: conversationMessageResponseSchema,
+});
+
+export const streamRunFailedSchema = z.object({
+  runId: z.string(),
+  code: z.enum(["provider_timeout", "provider_error", "internal_error"]),
+  message: z.string(),
+});

@@ -6,14 +6,16 @@ export type ChatRunPhase =
   | "sending" // Message 发送请求进行中。
   | "syncing-history" // Message 已发送成功，正在重新拉取服务端历史。
   | "sync-failed" // Message 已发送成功，但历史刷新失败；保留 run，只允许重试同步。
+  | "cancelled"
   | "failed"; // Conversation 创建或 Message 发送失败；保留消息内容供用户重试。
 
 export interface ChatRun {
   id: string;
   conversationId: string | null;
-  content: string;
+  content: string; //用户发送的内容
   phase: ChatRunPhase;
   error: string | null;
+  streamingText: string;
 }
 
 export interface ChatRuntimeState {
@@ -49,6 +51,8 @@ export interface ChatRuntimeState {
    */
   markSyncing(runId: string): void;
 
+  appendStreamingText(runId: string, delta: string): void;
+
   /**
    * Message 已发送但历史刷新失败时调用：syncing-history -> sync-failed。
    * 保留 run 和原消息，避免误重发；之后只能重试历史同步。
@@ -67,6 +71,7 @@ export interface ChatRuntimeState {
    */
   markFailed(runId: string, error: string): void;
 
+  markCancelled(runId: string): void;
   /**
    * 用户以相同内容重试 failed run：
    * New Chat 回到 creating-conversation，已有 Conversation 回到 awaiting-send。
@@ -102,11 +107,7 @@ export const useChatRuntimeStore = create<ChatRuntimeState>((set) => ({
       //清理旧的失败的new conversation
       const runsById = Object.fromEntries(
         Object.entries(state.runsById).filter(
-          ([, run]) =>
-            !(
-              run.conversationId === null &&
-              run.phase === "failed"
-            ),
+          ([, run]) => !(run.conversationId === null && run.phase === "failed"),
         ),
       );
 
@@ -118,6 +119,7 @@ export const useChatRuntimeStore = create<ChatRuntimeState>((set) => ({
             conversationId: null,
             content,
             phase: "creating-conversation",
+            streamingText: "",
             error: null,
           },
         },
@@ -136,7 +138,7 @@ export const useChatRuntimeStore = create<ChatRuntimeState>((set) => ({
           ([, run]) =>
             !(
               run.conversationId === conversationId &&
-              run.phase === "failed"
+              (run.phase === "failed" || run.phase === "cancelled")
             ),
         ),
       );
@@ -149,6 +151,8 @@ export const useChatRuntimeStore = create<ChatRuntimeState>((set) => ({
             conversationId,
             content,
             phase: "awaiting-send",
+            streamingText: "",
+
             error: null,
           },
         },
@@ -195,11 +199,27 @@ export const useChatRuntimeStore = create<ChatRuntimeState>((set) => ({
       return {
         runsById: {
           ...state.runsById,
-          [runId]: { ...run, phase: "sending", error: null },
+          [runId]: { ...run, phase: "sending", error: null, streamingText: "" },
         },
       };
     });
     return claimed;
+  },
+
+  appendStreamingText: (runId: string, delta: string) => {
+    set((state) => {
+      const run = state.runsById[runId];
+      if (!run || run.phase !== "sending" || delta.length === 0) return state;
+      return {
+        runsById: {
+          ...state.runsById,
+          [runId]: {
+            ...state.runsById[runId],
+            streamingText: run.streamingText + delta,
+          },
+        },
+      };
+    });
   },
 
   markSyncing: (runId: string) => {
@@ -210,7 +230,7 @@ export const useChatRuntimeStore = create<ChatRuntimeState>((set) => ({
       return {
         runsById: {
           ...state.runsById,
-          [runId]: { ...run, phase: "syncing-history" },
+          [runId]: { ...run, phase: "syncing-history", streamingText: "" },
         },
       };
     });
@@ -225,6 +245,24 @@ export const useChatRuntimeStore = create<ChatRuntimeState>((set) => ({
         runsById: {
           ...state.runsById,
           [runId]: { ...run, phase: "sync-failed", error },
+        },
+      };
+    });
+  },
+
+  markCancelled(runId: string) {
+    set((state) => {
+      const run = state.runsById[runId];
+      if (!run || run.phase !== "sending") return state;
+
+      return {
+        runsById: {
+          ...state.runsById,
+          [runId]: {
+            ...run,
+            phase: "cancelled",
+            error: null,
+          },
         },
       };
     });
@@ -275,6 +313,7 @@ export const useChatRuntimeStore = create<ChatRuntimeState>((set) => ({
             ...run,
             phase: run.conversationId ? "awaiting-send" : "creating-conversation",
             error: null,
+            streamingText: "",
           },
         },
       };
@@ -291,9 +330,7 @@ export const useChatRuntimeStore = create<ChatRuntimeState>((set) => ({
   clearConversation: (conversationId: string | null) => {
     set((state) => ({
       runsById: Object.fromEntries(
-        Object.entries(state.runsById).filter(
-          ([, run]) => run.conversationId !== conversationId,
-        ),
+        Object.entries(state.runsById).filter(([, run]) => run.conversationId !== conversationId),
       ),
     }));
   },
