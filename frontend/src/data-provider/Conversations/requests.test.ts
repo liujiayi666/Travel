@@ -88,6 +88,22 @@ describe("parseMessagesStreamEvent", () => {
       code: "provider_error",
       message: "generation failed",
     });
+
+    expect(
+      parseMessagesStreamEvent({
+        event: "run.failed",
+        data: JSON.stringify({
+          runId,
+          code: "conversation_busy",
+          message: "The conversation changed while generating.",
+        }),
+      }),
+    ).toEqual({
+      type: "run.failed",
+      runId,
+      code: "conversation_busy",
+      message: "The conversation changed while generating.",
+    });
   });
 
   it("converts persisted messages in run.completed", () => {

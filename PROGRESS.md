@@ -43,6 +43,7 @@
 | 15 | 2026-11-11 | 路线调整：A7.4.1 runtime 一致性延期但不取消；先基于已有 A7.5 基础链路完成一个学习级 A8 SSE 最小切片，之后再做 A7.6 并发串行化与 A7.4.1 事务一致性 |
 | 16 | 2026-11-13 | 完成 A8 SSE 流式文本最小切片、显式 Stop、跨 Conversation 后台继续与异步资源关闭链；后端 99、前端 85 tests、lint 与 build 通过 |
 | 17 | 2026-11-16 | 完成 A7.6 Conversation processing lease 与 token fencing；并发请求 409、过期接管、失败/Stop 释放和迟到写入拒绝均由真实 PostgreSQL 测试覆盖 |
+| 18 | 2026-11-16 | 路线调整：A7.4.1 Runtime 一致性继续暂缓，主学习线切换到 A9 Tool Contract 与单工具闭环 |
 
 ## 易错本
 
@@ -289,7 +290,7 @@
 - 学到：分页读取、pending 消息展示和 query 失效是三个不同问题；当前 `limit/offset + 页大小推断` 可工作，但显式 `has_more/next_offset`、幂等重试和失败时直接更新缓存是下一阶段待补边界
 - 面试向：我把 New Chat、历史读取和消息发送拆成服务端资源与客户端运行时两层，用可追踪 ChatRun 状态机、原子 claim、局部错误恢复和会话 fencing 保证快速导航、账号切换及失败重试不会串数据或误伤其他缓存
 
-#### A7.4.1 Runtime 一致性收尾 — 后续（A7.6 后）
+#### A7.4.1 Runtime 一致性收尾 — 暂缓（Agent 主线后按需）
 
 - 训练能力：可靠客户端事务。把“请求是否成功”从单次 HTTP 响应提升为可重放的服务端状态，并区分资源真实失败、结果未知和分页局部失败。
 - 目标：Conversation 创建与 Message 发送具备跨重试稳定性；消息历史使用显式分页；POST 成功直接更新缓存；认证 mutation 在响应丢失后通过 `/auth/me` 与 Cookie 真相重新对齐。
@@ -390,7 +391,7 @@
 
 ## 下一步
 
-下一步实现 A7.4.1 Runtime 一致性收尾：显式分页协议、幂等重试、发送成功直接更新缓存、next-page 错误隔离与认证歧义恢复。
+下一步进入 A9 Tool Contract 与单工具闭环：先让 Provider 表达结构化工具调用，再由服务端完成工具名、参数、权限、超时和错误的独立校验，最后把结构化结果交回模型生成回答。
 
 后续顺序：
 
@@ -402,9 +403,9 @@
 6. A7.5：发送消息与服务端上下文组装
 7. A8：SSE 学习级最小切片 — ✓
 8. A7.6：Conversation 并发发送串行化 — ✓
-9. A7.4.1：Runtime 一致性收尾
-10. A9：Tool Contract 与天气单工具闭环
-11. A10：Agent Loop、限额、Trace 与 Eval
+9. A9：Tool Contract 与天气单工具闭环
+10. A10：Agent Loop、限额、Trace 与 Eval
+11. A7.4.1：Runtime 一致性收尾 — 暂缓
 12. A11：RAG 知识检索工具
 13. A12：Conversation 历史治理与高级压缩
 14. A13：长期记忆工具

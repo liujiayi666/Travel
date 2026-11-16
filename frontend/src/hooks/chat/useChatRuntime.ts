@@ -15,8 +15,10 @@ import { streamMessage } from "@/data-provider/Conversations/requests";
 import {
   abortRunStream,
   createRunStreamController,
+  flushRunStreamText,
   releaseRunStreamController,
 } from "./runStreamControllers";
+import { createStreamingTextBuffer } from "./streamingTextBuffer";
 
 const isActivePhase = (run: ChatRun) => run.phase !== "failed" && run.phase !== "cancelled";
 
@@ -103,7 +105,13 @@ export const useChatRuntime = (
     let serverRunId: string | null = null;
     let terminalEvent: MessageStreamEvent | null = null;
     let streamError: unknown = null;
-    const controller = createRunStreamController(pendingRun.id);
+    const streamingTextBuffer = createStreamingTextBuffer((text) => {
+      const currentRun = useChatRuntimeStore.getState().runsById[pendingRun.id];
+      if (currentRun?.phase === "sending") {
+        useChatRuntimeStore.getState().appendStreamingText(pendingRun.id, text);
+      }
+    });
+    const controller = createRunStreamController(pendingRun.id, streamingTextBuffer.flush);
 
     try {
       for await (const event of streamMessage(
@@ -134,7 +142,7 @@ export const useChatRuntime = (
               break;
             }
 
-            store.appendStreamingText(pendingRun.id, event.delta);
+            streamingTextBuffer.push(event.delta);
             break;
           case MessageStreamEventType.RunCompleted:
             if (serverRunId !== event.runId) {
@@ -149,7 +157,6 @@ export const useChatRuntime = (
             }
 
             terminalEvent = event;
-            store.markFailed(pendingRun.id, event.message);
             break;
         }
 
@@ -160,6 +167,7 @@ export const useChatRuntime = (
     } catch (error) {
       streamError = error;
     } finally {
+      streamingTextBuffer.flush();
       releaseRunStreamController(pendingRun.id, controller);
     }
 
@@ -181,6 +189,7 @@ export const useChatRuntime = (
     }
 
     if (terminalEvent?.type === "run.failed") {
+      store.markFailed(pendingRun.id, terminalEvent.message);
       return;
     }
 
@@ -224,6 +233,7 @@ export const useChatRuntime = (
       return;
     }
 
+    flushRunStreamText(currentRunId);
     useChatRuntimeStore.getState().markCancelled(currentRunId);
     abortRunStream(currentRunId);
   };

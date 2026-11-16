@@ -1,5 +1,6 @@
 import asyncio
 import json
+import logging
 import uuid
 from collections.abc import AsyncGenerator, AsyncIterator
 from contextlib import asynccontextmanager
@@ -615,6 +616,45 @@ async def test_stream_reports_fencing_loss_without_persisting_late_response(
     assert events[-1][1]["code"] == "conversation_busy"
     assert history_response.json() == []
     assert len(provider.requests) == 1
+
+
+@pytest.mark.anyio
+async def test_stream_internal_error_log_is_redacted(
+    session_factory: async_sessionmaker[AsyncSession],
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    user_id = await persist_user(session_factory, "Redacted error")
+    provider = FakeStreamingConversationProvider(["private reply"])
+
+    async with session_factory() as session:
+        conversation = Conversation(user_id=user_id, title="Redacted error")
+        session.add(conversation)
+        await session.commit()
+        conversation_id = conversation.id
+
+    async def fail_persistence(*args, **kwargs) -> None:
+        raise RuntimeError("secret conversation content")
+
+    monkeypatch.setattr("app.conversations.service._persist_exchange", fail_persistence)
+
+    with caplog.at_level(logging.ERROR):
+        async with make_client(
+            session_factory,
+            user_id=user_id,
+            provider=provider,
+        ) as client:
+            response = await client.post(
+                f"/api/conversations/{conversation_id}/messages/stream",
+                json={"content": FIRST_MESSAGE},
+                headers={"Origin": settings.frontend_origin},
+            )
+
+    events = parse_sse_events(response.text)
+    assert events[-1][0] == "run.failed"
+    assert events[-1][1]["code"] == "internal_error"
+    assert "secret conversation content" not in caplog.text
+    assert "RuntimeError" in caplog.text
 
 
 @pytest.mark.anyio

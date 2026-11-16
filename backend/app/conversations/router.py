@@ -217,8 +217,12 @@ async def stream_conversation_message(
                     "message": "The language model could not finish the response.",
                 },
             )
-        except Exception:
-            logger.exception("Streaming conversation message failed")
+        except Exception as exc:  # noqa: BLE001 - SSE cannot change HTTP status after it starts
+            logger.error(
+                "Streaming conversation message failed run_id=%s error_type=%s",
+                run_id,
+                type(exc).__name__,
+            )
             yield encode_sse_event(
                 "run.failed",
                 {
