@@ -44,6 +44,7 @@
 | 16 | 2026-11-13 | 完成 A8 SSE 流式文本最小切片、显式 Stop、跨 Conversation 后台继续与异步资源关闭链；后端 99、前端 85 tests、lint 与 build 通过 |
 | 17 | 2026-11-16 | 完成 A7.6 Conversation processing lease 与 token fencing；并发请求 409、过期接管、失败/Stop 释放和迟到写入拒绝均由真实 PostgreSQL 测试覆盖 |
 | 18 | 2026-11-16 | 路线调整：A7.4.1 Runtime 一致性继续暂缓，主学习线切换到 A9 Tool Contract 与单工具闭环 |
+| 19 | 2026-11-16 | 将 LLM 基础、超时/重试、Function Calling、Prompt Injection、幻觉和评测并入 A9/A10，避免理论课脱离 Agent 主线 |
 
 ## 易错本
 
@@ -345,16 +346,51 @@
 - 学到：客户端取消是“状态机 + 传输 + 资源”三件事。先标记 `cancelled` 再 abort，应用级 Controller 让生成跨 UI 卸载继续；后端用嵌套 `aclosing` 保证断开最终关闭 Provider 和 upstream stream。
 - 面试向：我把供应商流归一化为应用 SSE 事件，用显式 ChatRun 状态机和 AbortController 区分用户停止、Provider 失败与页面切换，再通过显式异步关闭链把客户端断开可靠传播到上游模型请求；正常完成才在同一事务中保存本轮两条消息。
 
-### A9 Tool Contract 与单工具闭环 — 后续
+#### A9.0 LLM 基础能力校验 — 进行中
 
-- 训练能力：结构化工具调用。LLM 提出 `get_weather(destination, date_range)`，后端独立验证工具名与参数，执行后把结构化结果交还 LLM 生成最终文本。
-- 验收：直接回答和工具调用都可被 fake provider 复现；未知工具、非法参数、工具超时和工具失败都有稳定结果；真实 smoke test 证明一次天气问答闭环
+| 模块 | 当前基础 | 本阶段处理方式 |
+|---|---|---|
+| 模型工作原理 | Provider 调用与文本生成已可用 | 只讲 token 预测、无状态调用和知识截止，不展开训练算法 |
+| Token / 上下文窗口 | 已有消息数、字符数和租约期限 | 解释字符预算不等于 token；后续优先读取供应商 usage，不把某个 tokenizer 硬编码进业务层 |
+| Prompt / System Message | 服务端组装 system prompt 和有界历史 | 补角色优先级与客户端不可提交 system/history 的边界 |
+| Temperature / Top-P / Max Tokens | max_tokens 已由服务端配置；采样参数尚未暴露 | 继续只允许服务端配置；根据工具调用稳定性决定是否加 temperature/top_p |
+| Complete / Stream | 两条调用路径均已验收 | 复习共同 Provider 边界与不同终止语义 |
+| 本地 / 云模型 | 已支持 OpenAI-compatible 云 Provider | 本地模型部署延后，不阻塞 Agent 主线 |
+| Timeout / Deadline | Complete 有客户端超时；Stream 有总 deadline；lease 必须更长 | 通过测试验证超时能终止并释放资源 |
+| 重试 / 指数退避 | 当前 `llm_max_retries=0` | 只对安全的只读调用设计有限重试；有副作用的工具必须结合幂等键，不能自动重放 |
+| Function Calling / Tool Proposal | 尚未实现 | A9.1 建立应用自己的 ToolCall/ToolResult 契约与单工具闭环 |
+| Prompt Injection | 工具参数与外部内容都视为不可信输入 | A9 加入未知工具、非法参数和工具结果注入测试 |
+| 幻觉 | 普通文本回复已存在 | A9/A10 验证工具结果 grounding，评估无工具结果时不得伪造天气事实 |
+| 模型评测 | fake Provider 与固定失败测试 | A10 建立正常、工具失败、越权/注入、上限和取消的固定回归集 |
+
+- 训练能力：能把 LLM 当作“无状态、受上下文预算约束的候选生成器”来设计系统，分清模型建议与服务端决策，并据此确定角色信任边界、采样/长度参数、deadline、有限重试和 groundedness。
+- 可运行 happy path：用现有 Conversation 请求核对 Provider 实际收到的 system/history/current messages，解释模型为什么只能基于这些输入回答，以及字符预算与 token 预算为何不是同一个指标。
+- 可运行 failure path：给出“上游结果未知后自动重试带副作用工具”“工具/外部文本要求忽略系统规则”“没有天气结果却直接编造天气”三个场景，分别选出安全行为并说明对应工程边界。
+- 可观察证据：热身题和口头复习全部能自洽回答；能在 `LlmRequest`、`build_context()`、Provider 配置与 A9.1 Tool Contract 之间指出信任边界和失败传播路径。此步不新增业务代码。
+
+#### A9.1 Tool Contract 与单工具闭环 — 进行中
+
+- 训练能力：结构化工具调用。LLM 提出 `get_weather(destination, date_range)`，Provider 将供应商原始 tool call 归一化为应用 DTO；后端通过工具白名单和 Schema 独立验证，执行后把结构化结果交还模型生成最终文本。
+- 验收：直接回答和工具调用都可被 fake provider 复现；未知工具、非法参数、工具超时和工具失败都有稳定结果；工具结果中的恶意 instructions 不得提升权限；最终回答必须基于结构化工具结果，真实 smoke test 证明一次天气问答闭环。
 - 明确不做：任意多步循环、并行工具、长期记忆和私有资源写入
+
+契约顺序：
+
+1. 首次 LLM 调用可以返回直接文本或至多一个应用定义的 `ToolCall`；供应商原始字段不得越过 Provider 边界。
+2. 服务端只按工具白名单分派，并以 Pydantic 重新验证工具参数；模型输出中的工具名、用户身份和权限声明都不被信任。
+3. `get_weather` 是只读工具，具有独立 timeout；结果必须保留来源/时间等结构化 metadata，文本内容只能作为不可信数据消费。
+4. 工具成功、参数非法、超时或执行失败都要形成稳定的内部结果；异常不能伪装成正常天气数据，也不能无限重试。
+5. 第二次 LLM 调用消费原始工具提议与工具结果并生成最终回答；本轮最多一次工具执行、两次模型调用，不引入通用 Agent loop。
+6. 最终回答的事实必须可追溯到工具结果。无结果、工具失败或结果不可信时，应明确降级而不是编造天气事实。
+
+- 可运行 happy path：fake provider 第一次返回合法 `get_weather(Hangzhou, 2026-11-20..2026-11-21)`，执行器返回结构化天气；第二次调用后生成基于该结果的文本，浏览器/API 得到最终回答。
+- 可运行 failure path：未知工具、缺字段/非法日期、工具超时、工具异常和工具结果 Prompt Injection 均不会越权或触发任意工具；请求以稳定回答或既有错误边界终止，且 Provider 调用次数/工具执行次数可断言。
+- 可观察证据：pytest 覆盖 Provider 归一化、白名单、Schema、timeout、调用次数、不可信结果和失败终态；一次真实天气工具 smoke test 核对最终回答与工具返回事实一致；不记录敏感完整 prompt 或密钥。
 
 ### A10 Agent Loop、限额、Trace 与 Eval — 后续
 
 - 训练能力：受控循环与可靠性。明确最大步骤、总时长、token/成本上限，以及 completed / failed / cancelled / max_steps_reached 等终止状态。
-- 验收：固定 eval 覆盖正常回答、正常工具调用、工具失败、非法参数、达到上限、Provider 失败和取消；记录 run/tool 轨迹、耗时、token 与失败原因
+- 验收：固定 eval 覆盖正常回答、正常工具调用、工具失败、非法参数、达到上限、Provider 失败、取消和 Prompt Injection；记录 run/tool 轨迹、耗时、token 与失败原因；回归集包含 mock、人工标注结果和可重复运行命令
 - 明确不做：在核心循环可靠前继续堆叠工具
 
 ### A11 RAG 知识检索工具 — 后续
@@ -391,7 +427,7 @@
 
 ## 下一步
 
-下一步进入 A9 Tool Contract 与单工具闭环：先让 Provider 表达结构化工具调用，再由服务端完成工具名、参数、权限、超时和错误的独立校验，最后把结构化结果交回模型生成回答。
+下一步从 A9.0 LLM 基础能力校验开始，再进入 A9.1 Tool Contract：先让 Provider 表达结构化工具调用，再由服务端完成工具名、参数、权限、超时和错误的独立校验，最后把结构化结果交回模型生成回答。
 
 后续顺序：
 
@@ -403,7 +439,7 @@
 6. A7.5：发送消息与服务端上下文组装
 7. A8：SSE 学习级最小切片 — ✓
 8. A7.6：Conversation 并发发送串行化 — ✓
-9. A9：Tool Contract 与天气单工具闭环
+9. A9：LLM 基础校验 + Tool Contract 与天气单工具闭环 — 进行中
 10. A10：Agent Loop、限额、Trace 与 Eval
 11. A7.4.1：Runtime 一致性收尾 — 暂缓
 12. A11：RAG 知识检索工具

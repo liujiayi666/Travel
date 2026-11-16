@@ -528,6 +528,8 @@ outputTokens
 
 - Provider 支持结构化工具调用，DeepSeek 默认、GLM 可切换适配。
 - 先接入一个只读工具的完整闭环，覆盖 Schema 校验、超时和稳定错误。
+- LLM 基础概念（token/context、prompt roles、采样参数、deadline、有限重试、幻觉与评测）跟随 Tool Contract 和 Agent Loop 学习，不单独建立脱离工程证据的理论阶段。
+- 本地模型部署不阻塞 Agent 主线，放到后续部署与模型选型步骤。
 - 单个工具闭环稳定后，再扩展 Agent loop。
 - Agent loop 状态机、最大步骤/时长/token、取消和终止状态。
 - AgentRun / ToolCall trace、成本和延迟记录。
