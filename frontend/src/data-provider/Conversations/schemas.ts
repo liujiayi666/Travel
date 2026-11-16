@@ -73,6 +73,11 @@ export const streamRunCompletedSchema = z.object({
 
 export const streamRunFailedSchema = z.object({
   runId: z.string(),
-  code: z.enum(["provider_timeout", "provider_error", "internal_error"]),
+  code: z.enum([
+    "provider_timeout",
+    "provider_error",
+    "internal_error",
+    "conversation_busy",
+  ]),
   message: z.string(),
 });

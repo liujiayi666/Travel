@@ -1,9 +1,11 @@
+import asyncio
 import uuid
 from collections.abc import AsyncGenerator
 from contextlib import aclosing
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
+from anyio import CancelScope
 from sqlalchemy import func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -15,7 +17,7 @@ from app.conversations.errors import (
 from app.conversations.models import Conversation, Message
 from app.core.config import settings
 from app.llm.contracts import LlmAssistantMessage, LlmMessage, LlmProvider, LlmRequest, LlmTextDelta
-from app.llm.errors import LlmProviderError
+from app.llm.errors import LlmProviderError, LlmTimeoutError
 
 SYSTEM_PROMPT = (
     "You are Travel Copilot, a concise travel planning assistant. "
@@ -314,6 +316,20 @@ async def _release_conversation_lease(
         raise
 
 
+async def _release_conversation_lease_safely(
+    session: AsyncSession,
+    *,
+    conversation_id: uuid.UUID,
+    lease_token: uuid.UUID,
+) -> None:
+    with CancelScope(shield=True):
+        await _release_conversation_lease(
+            session,
+            conversation_id=conversation_id,
+            lease_token=lease_token,
+        )
+
+
 async def send_message(
     session: AsyncSession,
     provider: LlmProvider,
@@ -340,7 +356,7 @@ async def send_message(
         )
         return reply
     finally:
-        await _release_conversation_lease(
+        await _release_conversation_lease_safely(
             session,
             conversation_id=conversation_id,
             lease_token=prepared_message_stream.lease_token,
@@ -358,10 +374,14 @@ async def stream_message(
     conversation_id = prepared.conversation.id
 
     try:
-        async with aclosing(provider.stream(prepared.request)) as provider_stream:
-            async for delta in provider_stream:
-                parts.append(delta.text)
-                yield delta
+        try:
+            async with asyncio.timeout(settings.llm_timeout):
+                async with aclosing(provider.stream(prepared.request)) as provider_stream:
+                    async for delta in provider_stream:
+                        parts.append(delta.text)
+                        yield delta
+        except TimeoutError as exc:
+            raise LlmTimeoutError("Language model request timed out") from exc
 
         assistant_content = "".join(parts)
         if not assistant_content.strip():
@@ -380,7 +400,7 @@ async def stream_message(
             assistant_message=assistant_message,
         )
     finally:
-        await _release_conversation_lease(
+        await _release_conversation_lease_safely(
             session,
             conversation_id=conversation_id,
             lease_token=prepared.lease_token,

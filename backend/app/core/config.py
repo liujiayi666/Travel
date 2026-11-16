@@ -1,6 +1,6 @@
-from typing import Literal
+from typing import Literal, Self
 
-from pydantic import Field, SecretStr
+from pydantic import Field, SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -16,7 +16,7 @@ class Settings(BaseSettings):
     frontend_origin: str = "http://localhost:5173"
 
     llm_provider: Literal["deepseek", "glm"] = "deepseek"
-    llm_timeout: float = 30.0
+    llm_timeout: float = Field(default=30.0, gt=0)
     llm_max_retries: int = 0
     chat_context_max_messages: int = Field(default=40, gt=0)
     chat_context_max_chars: int = Field(default=16_000, gt=0)
@@ -34,6 +34,12 @@ class Settings(BaseSettings):
     glm_max_token: int = 1000
 
     conversation_lease_seconds: int = Field(default=90, gt=0)
+
+    @model_validator(mode="after")
+    def validate_conversation_lease(self) -> Self:
+        if self.conversation_lease_seconds <= self.llm_timeout:
+            raise ValueError("conversation_lease_seconds must be greater than llm_timeout")
+        return self
 
     @property
     def auth_cookie_secure(self) -> bool:

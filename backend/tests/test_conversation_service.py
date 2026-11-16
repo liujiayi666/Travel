@@ -1,3 +1,4 @@
+import asyncio
 import uuid
 from collections.abc import AsyncGenerator, AsyncIterator
 from datetime import UTC, datetime, timedelta
@@ -29,7 +30,7 @@ from app.conversations.service import (
 )
 from app.core.config import Settings, settings
 from app.llm.contracts import LlmAssistantMessage, LlmMessage, LlmRequest, LlmResponse, LlmTextDelta
-from app.llm.errors import LlmProviderError
+from app.llm.errors import LlmProviderError, LlmTimeoutError
 
 
 @pytest.fixture
@@ -99,6 +100,8 @@ def test_settings_reject_non_positive_context_limits() -> None:
         Settings(chat_context_max_messages=0)
     with pytest.raises(ValidationError):
         Settings(chat_context_max_chars=0)
+    with pytest.raises(ValidationError):
+        Settings(llm_timeout=30, conversation_lease_seconds=30)
 
 
 @pytest.mark.anyio
@@ -281,6 +284,107 @@ async def test_consumer_stop_releases_conversation_lease(
         )
         assert first_delta == LlmTextDelta(text="先去")
         assert lease_token is None
+
+
+@pytest.mark.anyio
+async def test_stream_timeout_releases_conversation_lease(
+    session_factory: async_sessionmaker[AsyncSession],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class SlowStreamingProvider:
+        async def complete(self, request: LlmRequest) -> LlmResponse:
+            raise AssertionError("Streaming test must not call complete()")
+
+        async def stream(self, request: LlmRequest) -> AsyncGenerator[LlmTextDelta, None]:
+            yield LlmTextDelta(text="先去")
+            await asyncio.sleep(0.05)
+            yield LlmTextDelta(text="西湖")
+
+    monkeypatch.setattr(settings, "llm_timeout", 0.01)
+
+    async with session_factory() as session:
+        user = make_user("Timed out lease")
+        session.add(user)
+        await session.flush()
+        conversation = Conversation(user_id=user.id, title="Timed out lease")
+        session.add(conversation)
+        await session.commit()
+        conversation_id = conversation.id
+
+        prepared = await prepare_message_stream(
+            session,
+            user_id=user.id,
+            conversation_id=conversation_id,
+            content="question",
+        )
+        stream = stream_message(
+            session,
+            SlowStreamingProvider(),
+            prepared_message_stream=prepared,
+        )
+
+        assert await anext(stream) == LlmTextDelta(text="先去")
+        with pytest.raises(LlmTimeoutError):
+            await anext(stream)
+
+        lease_token = await session.scalar(
+            select(Conversation.processing_token).where(Conversation.id == conversation_id)
+        )
+        assert lease_token is None
+
+
+@pytest.mark.anyio
+async def test_cancelled_stream_releases_conversation_lease(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    class BlockingStreamingProvider:
+        def __init__(self) -> None:
+            self.waiting = asyncio.Event()
+
+        async def complete(self, request: LlmRequest) -> LlmResponse:
+            raise AssertionError("Streaming test must not call complete()")
+
+        async def stream(self, request: LlmRequest) -> AsyncGenerator[LlmTextDelta, None]:
+            yield LlmTextDelta(text="先去")
+            self.waiting.set()
+            await asyncio.Event().wait()
+            yield LlmTextDelta(text="unreachable")
+
+    async with session_factory() as session:
+        user = make_user("Cancelled lease")
+        session.add(user)
+        await session.flush()
+        conversation = Conversation(user_id=user.id, title="Cancelled lease")
+        session.add(conversation)
+        await session.commit()
+        conversation_id = conversation.id
+
+        provider = BlockingStreamingProvider()
+        prepared = await prepare_message_stream(
+            session,
+            user_id=user.id,
+            conversation_id=conversation_id,
+            content="question",
+        )
+        stream = stream_message(
+            session,
+            provider,
+            prepared_message_stream=prepared,
+        )
+
+        assert await anext(stream) == LlmTextDelta(text="先去")
+        pending_delta = asyncio.create_task(anext(stream))
+        await provider.waiting.wait()
+        pending_delta.cancel()
+
+        with pytest.raises(asyncio.CancelledError):
+            await pending_delta
+
+        async with session_factory() as verification_session:
+            lease_token = await verification_session.scalar(
+                select(Conversation.processing_token).where(Conversation.id == conversation_id)
+            )
+            assert lease_token is None
 
 
 @pytest.mark.anyio

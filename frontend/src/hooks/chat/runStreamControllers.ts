@@ -1,17 +1,30 @@
-const controllersByRunId = new Map<string, AbortController>();
+interface RunStreamControl {
+  controller: AbortController;
+  flushText: () => void;
+}
 
-export const createRunStreamController = (runId: string): AbortController => {
+const controlsByRunId = new Map<string, RunStreamControl>();
+
+export const createRunStreamController = (
+  runId: string,
+  flushText: () => void,
+): AbortController => {
   const controller = new AbortController();
-  controllersByRunId.set(runId, controller);
+  controlsByRunId.set(runId, { controller, flushText });
   return controller;
 };
 
 export const releaseRunStreamController = (runId: string, controller: AbortController) => {
-  if (controllersByRunId.get(runId) === controller) {
-    controllersByRunId.delete(runId);
+  const control = controlsByRunId.get(runId);
+  if (control?.controller === controller) {
+    controlsByRunId.delete(runId);
   }
 };
 
 export const abortRunStream = (runId: string) => {
-  controllersByRunId.get(runId)?.abort();
+  controlsByRunId.get(runId)?.controller.abort();
+};
+
+export const flushRunStreamText = (runId: string) => {
+  controlsByRunId.get(runId)?.flushText();
 };
