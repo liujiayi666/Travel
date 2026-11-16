@@ -33,6 +33,8 @@ class Settings(BaseSettings):
     glm_base_url: str = "https://open.bigmodel.cn/api/paas/v4"
     glm_max_token: int = 1000
 
+    conversation_lease_seconds: int = Field(default=90, gt=0)
+
     @property
     def auth_cookie_secure(self) -> bool:
         return self.app_env == "production"

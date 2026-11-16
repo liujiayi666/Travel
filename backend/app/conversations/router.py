@@ -12,6 +12,7 @@ from app.auth.dependencies import get_current_user, require_trusted_origin
 from app.auth.models import User
 from app.chat.presenter import to_chat_response
 from app.chat.schemas import ChatResponse
+from app.conversations.errors import ConversationBusyError
 from app.conversations.schemas import (
     ConversationCreateRequest,
     ConversationResponse,
@@ -185,6 +186,16 @@ async def stream_conversation_message(
                     "runId": str(run_id),
                     "code": "provider_timeout",
                     "message": "The language model request timed out.",
+                },
+            )
+
+        except ConversationBusyError:
+            yield encode_sse_event(
+                "run.failed",
+                {
+                    "runId": run_id,
+                    "code": "conversation_busy",
+                    "message": "The conversation changed while generating.",
                 },
             )
 

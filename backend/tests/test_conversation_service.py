@@ -2,30 +2,34 @@ import uuid
 from collections.abc import AsyncGenerator, AsyncIterator
 from datetime import UTC, datetime, timedelta
 from typing import cast
+from unittest.mock import AsyncMock
 
 import pytest
 from pydantic import ValidationError
-from sqlalchemy import delete
+from sqlalchemy import delete, select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
 
 from app.auth.models import User
-from app.conversations.errors import ConversationNotFoundError
+from app.conversations.errors import ConversationBusyError, ConversationNotFoundError
 from app.conversations.models import Conversation, Message
 from app.conversations.service import (
     DEFAULT_CONVERSATION_TITLE,
     MAX_TITLE_CHARS,
     SYSTEM_PROMPT,
     PreparedMessageStream,
+    _persist_exchange,
     build_context,
     build_conversation_title,
     list_conversations,
     list_messages,
+    prepare_message_stream,
     send_message,
     stream_message,
 )
 from app.core.config import Settings, settings
 from app.llm.contracts import LlmAssistantMessage, LlmMessage, LlmRequest, LlmResponse, LlmTextDelta
+from app.llm.errors import LlmProviderError
 
 
 @pytest.fixture
@@ -132,6 +136,233 @@ async def test_send_message_releases_read_transaction_before_provider_call(
 
 
 @pytest.mark.anyio
+async def test_prepare_message_stream_rejects_a_concurrent_sender(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    async with session_factory() as session:
+        user = make_user("Concurrent sender")
+        session.add(user)
+        await session.flush()
+        conversation = Conversation(user_id=user.id, title="Concurrent")
+        session.add(conversation)
+        await session.commit()
+
+        await prepare_message_stream(
+            session,
+            user_id=user.id,
+            conversation_id=conversation.id,
+            content="first",
+        )
+
+        async with session_factory() as competing_session:
+            with pytest.raises(ConversationBusyError):
+                await prepare_message_stream(
+                    competing_session,
+                    user_id=user.id,
+                    conversation_id=conversation.id,
+                    content="second",
+                )
+
+
+@pytest.mark.anyio
+async def test_provider_failure_releases_conversation_lease(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    class FailingProvider:
+        async def complete(self, request: LlmRequest) -> LlmResponse:
+            raise LlmProviderError("provider failed")
+
+        async def stream(self, request: LlmRequest) -> AsyncGenerator[LlmTextDelta, None]:
+            raise LlmProviderError("provider failed")
+            yield LlmTextDelta(text="unreachable")
+
+    async with session_factory() as session:
+        user = make_user("Lease release")
+        session.add(user)
+        await session.flush()
+        conversation = Conversation(user_id=user.id, title="Release")
+        session.add(conversation)
+        await session.commit()
+
+        with pytest.raises(LlmProviderError):
+            await send_message(
+                session,
+                FailingProvider(),
+                user_id=user.id,
+                conversation_id=conversation.id,
+                content="question",
+            )
+
+        lease_token = await session.scalar(
+            select(Conversation.processing_token).where(Conversation.id == conversation.id)
+        )
+        assert lease_token is None
+
+
+@pytest.mark.anyio
+async def test_persistence_failure_releases_conversation_lease(
+    session_factory: async_sessionmaker[AsyncSession],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class SuccessfulProvider:
+        async def complete(self, request: LlmRequest) -> LlmResponse:
+            return LlmResponse(message=LlmAssistantMessage(content="reply"))
+
+        async def stream(self, request: LlmRequest) -> AsyncGenerator[LlmTextDelta, None]:
+            yield LlmTextDelta(text="reply")
+
+    async with session_factory() as session:
+        user = make_user("Persistence failure")
+        session.add(user)
+        await session.flush()
+        conversation = Conversation(user_id=user.id, title="Persistence failure")
+        session.add(conversation)
+        await session.commit()
+        conversation_id = conversation.id
+
+        monkeypatch.setattr(
+            "app.conversations.service._persist_exchange",
+            AsyncMock(side_effect=RuntimeError("persistence failed")),
+        )
+
+        with pytest.raises(RuntimeError, match="persistence failed"):
+            await send_message(
+                session,
+                SuccessfulProvider(),
+                user_id=user.id,
+                conversation_id=conversation_id,
+                content="question",
+            )
+
+        lease_token = await session.scalar(
+            select(Conversation.processing_token).where(Conversation.id == conversation_id)
+        )
+        assert lease_token is None
+
+
+@pytest.mark.anyio
+async def test_consumer_stop_releases_conversation_lease(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    class SlowStreamingProvider:
+        async def complete(self, request: LlmRequest) -> LlmResponse:
+            raise AssertionError("Streaming test must not call complete()")
+
+        async def stream(self, request: LlmRequest) -> AsyncGenerator[LlmTextDelta, None]:
+            yield LlmTextDelta(text="先去")
+            yield LlmTextDelta(text="西湖")
+
+    async with session_factory() as session:
+        user = make_user("Stopped lease")
+        session.add(user)
+        await session.flush()
+        conversation = Conversation(user_id=user.id, title="Stopped lease")
+        session.add(conversation)
+        await session.commit()
+        conversation_id = conversation.id
+
+        prepared = await prepare_message_stream(
+            session,
+            user_id=user.id,
+            conversation_id=conversation_id,
+            content="question",
+        )
+        stream = stream_message(
+            session,
+            SlowStreamingProvider(),
+            prepared_message_stream=prepared,
+        )
+
+        first_delta = await anext(stream)
+        await stream.aclose()
+
+        lease_token = await session.scalar(
+            select(Conversation.processing_token).where(Conversation.id == conversation_id)
+        )
+        assert first_delta == LlmTextDelta(text="先去")
+        assert lease_token is None
+
+
+@pytest.mark.anyio
+async def test_expired_lease_can_be_reclaimed(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    old_token = uuid.uuid4()
+
+    async with session_factory() as session:
+        user = make_user("Expired lease")
+        session.add(user)
+        await session.flush()
+        conversation = Conversation(
+            user_id=user.id,
+            title="Expired",
+            processing_token=old_token,
+            processing_expires_at=datetime.now(UTC) - timedelta(seconds=1),
+        )
+        session.add(conversation)
+        await session.commit()
+
+        prepared = await prepare_message_stream(
+            session,
+            user_id=user.id,
+            conversation_id=conversation.id,
+            content="take over",
+        )
+
+        current_token = await session.scalar(
+            select(Conversation.processing_token).where(Conversation.id == conversation.id)
+        )
+        assert prepared.lease_token == current_token
+        assert current_token != old_token
+
+
+@pytest.mark.anyio
+async def test_stale_lease_token_cannot_persist(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    async with session_factory() as session:
+        user = make_user("Stale lease")
+        session.add(user)
+        await session.flush()
+        conversation = Conversation(user_id=user.id, title="Fencing")
+        session.add(conversation)
+        await session.commit()
+        conversation_id = conversation.id
+
+        prepared = await prepare_message_stream(
+            session,
+            user_id=user.id,
+            conversation_id=conversation_id,
+            content="slow request",
+        )
+
+        async with session_factory() as takeover_session:
+            await takeover_session.execute(
+                update(Conversation)
+                .where(Conversation.id == conversation_id)
+                .values(
+                    processing_token=uuid.uuid4(),
+                    processing_expires_at=datetime.now(UTC) + timedelta(seconds=30),
+                )
+            )
+            await takeover_session.commit()
+
+        with pytest.raises(ConversationBusyError):
+            await _persist_exchange(
+                session,
+                conversation_id=conversation_id,
+                lease_token=prepared.lease_token,
+                content="slow request",
+                assistant_content="late response",
+            )
+
+        messages = (
+            await session.scalars(select(Message).where(Message.conversation_id == conversation_id))
+        ).all()
+        assert messages == []
+
+
+@pytest.mark.anyio
 async def test_stream_message_closes_provider_when_consumer_stops() -> None:
     class ClosingProbeProvider:
         closed = False
@@ -151,9 +382,10 @@ async def test_stream_message_closes_provider_when_consumer_stops() -> None:
         conversation=Conversation(user_id=uuid.uuid4(), title="Stopped stream"),
         request=LlmRequest(messages=[LlmMessage(role="user", content="杭州玩两天")]),
         content="杭州玩两天",
+        lease_token=uuid.uuid4(),
     )
 
-    session = cast(AsyncSession, object())
+    session = cast(AsyncSession, AsyncMock())
     stream = stream_message(session, provider, prepared_message_stream=prepared)
 
     first_delta = await anext(stream)

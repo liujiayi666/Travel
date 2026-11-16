@@ -1,3 +1,4 @@
+import asyncio
 import json
 import uuid
 from collections.abc import AsyncGenerator, AsyncIterator
@@ -8,7 +9,7 @@ from typing import Any
 
 import pytest
 from httpx import ASGITransport, AsyncClient
-from sqlalchemy import delete
+from sqlalchemy import delete, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
 
@@ -137,6 +138,40 @@ class FakeStreamingConversationProvider:
 
         if self.error is not None:
             raise self.error
+
+
+class BlockingConversationProvider:
+    def __init__(self) -> None:
+        self.requests: list[LlmRequest] = []
+        self.started = asyncio.Event()
+        self.release = asyncio.Event()
+
+    async def complete(self, request: LlmRequest) -> LlmResponse:
+        self.requests.append(request)
+        self.started.set()
+        await self.release.wait()
+        return LlmResponse(message=LlmAssistantMessage(content=FIRST_REPLY))
+
+    async def stream(self, request: LlmRequest) -> AsyncGenerator[LlmTextDelta, None]:
+        raise AssertionError("Concurrent-send test must use complete()")
+        yield LlmTextDelta(text="unreachable")
+
+
+class TakeoverStreamingProvider:
+    def __init__(self) -> None:
+        self.requests: list[LlmRequest] = []
+        self.started = asyncio.Event()
+        self.release = asyncio.Event()
+
+    async def complete(self, request: LlmRequest) -> LlmResponse:
+        raise AssertionError("Takeover test must use stream()")
+
+    async def stream(self, request: LlmRequest) -> AsyncGenerator[LlmTextDelta, None]:
+        self.requests.append(request)
+        self.started.set()
+        yield LlmTextDelta(text="先去")
+        await self.release.wait()
+        yield LlmTextDelta(text="西湖")
 
 
 def parse_sse_events(body: str) -> list[tuple[str, dict[str, Any]]]:
@@ -485,6 +520,101 @@ async def test_stream_message_hides_foreign_conversation_before_starting_stream(
     assert response.status_code == 404
     assert response.json() == {"detail": "Conversation not found"}
     assert provider.requests == []
+
+
+@pytest.mark.anyio
+async def test_concurrent_send_returns_conflict_and_calls_provider_once(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    user_id = await persist_user(session_factory, "Concurrent sender")
+    provider = BlockingConversationProvider()
+
+    async with session_factory() as session:
+        conversation = Conversation(user_id=user_id, title=FIRST_MESSAGE)
+        session.add(conversation)
+        await session.commit()
+
+    async with make_client(
+        session_factory,
+        user_id=user_id,
+        provider=provider,
+    ) as client:
+        first_request = asyncio.create_task(
+            client.post(
+                f"/api/conversations/{conversation.id}/messages",
+                json={"content": FIRST_MESSAGE},
+                headers={"Origin": settings.frontend_origin},
+            )
+        )
+        await asyncio.wait_for(provider.started.wait(), timeout=5)
+
+        second_response = await client.post(
+            f"/api/conversations/{conversation.id}/messages",
+            json={"content": FOLLOW_UP_CONTENT},
+            headers={"Origin": settings.frontend_origin},
+        )
+        assert second_response.status_code == 409
+        assert second_response.json() == {"detail": "Conversation is busy"}
+
+        provider.release.set()
+        first_response = await first_request
+
+    assert first_response.status_code == 200
+    assert len(provider.requests) == 1
+
+
+@pytest.mark.anyio
+async def test_stream_reports_fencing_loss_without_persisting_late_response(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    user_id = await persist_user(session_factory, "Stream takeover")
+    provider = TakeoverStreamingProvider()
+
+    async with session_factory() as session:
+        conversation = Conversation(user_id=user_id, title="Stream takeover")
+        session.add(conversation)
+        await session.commit()
+        conversation_id = conversation.id
+
+    async with make_client(
+        session_factory,
+        user_id=user_id,
+        provider=provider,
+    ) as client:
+        stream_request = asyncio.create_task(
+            client.post(
+                f"/api/conversations/{conversation_id}/messages/stream",
+                json={"content": FIRST_MESSAGE},
+                headers={"Origin": settings.frontend_origin},
+            )
+        )
+        await asyncio.wait_for(provider.started.wait(), timeout=5)
+
+        async with session_factory() as takeover_session:
+            await takeover_session.execute(
+                update(Conversation)
+                .where(Conversation.id == conversation_id)
+                .values(
+                    processing_token=uuid.uuid4(),
+                    processing_expires_at=datetime.now(UTC) + timedelta(seconds=30),
+                )
+            )
+            await takeover_session.commit()
+
+        provider.release.set()
+        response = await stream_request
+        history_response = await client.get(
+            f"/api/conversations/{conversation_id}/messages",
+        )
+
+    assert response.status_code == 200
+    events = parse_sse_events(response.text)
+    assert events[0][0] == "run.started"
+    assert any(name == "text.delta" for name, _ in events)
+    assert events[-1][0] == "run.failed"
+    assert events[-1][1]["code"] == "conversation_busy"
+    assert history_response.json() == []
+    assert len(provider.requests) == 1
 
 
 @pytest.mark.anyio
