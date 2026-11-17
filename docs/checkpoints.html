@@ -248,6 +248,21 @@
       </ul>
       <blockquote>用数据库原子 lease 串行化同一 Conversation 的生成，再用 fencing token 让过期 owner 失去写入资格；短事务只保护 claim 与 persist，外部模型调用期间不占用数据库连接。</blockquote>
     </article>
+    <article class="cp">
+      <header>
+        <h2><a href="https://github.com/liujiayi666/Travel/pull/24">PR #24 · feat(agent): add single weather tool loop</a></h2>
+      </header>
+      <p class="cp-meta">A9.0 / A9.1 LLM 基础与单天气工具闭环 · 2026-11-17 · commit a949b07 · CI 基础设施 PR #25 · commit 6a9cbc2</p>
+      <ul>
+        <li>模型只返回应用自己的 <code>ToolCall</code> 提议；Provider 把供应商原始 <code>tool_calls</code> 归一化，Registry 与 Tool Schema 独立验证工具名和参数</li>
+        <li>Orchestrator 在一次总 deadline 内完成“第一次 LLM → 一次工具执行 → 第二次 LLM”，第二次请求携带 ToolCall 与 ToolResult 且不再提供 tools，避免隐式无限循环</li>
+        <li>WeatherTool 将 Open-Meteo geocoding/forecast 归一化为应用模型；中文地点必须匹配 geocoding language，来源、观测时间与服务端生成 metadata 放入 ToolResult</li>
+        <li>工具自身 timeout 与 AgentRun 总 timeout 属于不同错误边界；失败不会执行最终持久化，Conversation Service 在 <code>finally</code> 中按 fencing token 释放 lease</li>
+        <li>github 上的 Backend/Frontend Actions 并行执行 lint、测试、迁移与 build；证据为后端 139 passed、前端 86 tests 和真实天津天气 smoke test</li>
+        <li>字符预算不等于 token 预算；中英文 tokenizer、消息 framing、Tool Schema、ToolResult 与预留输出空间都消耗上下文</li>
+      </ul>
+      <blockquote>把供应商工具协议限制在 Provider 边界，用白名单与二次 Schema 验证把模型建议变成受控执行；整个工具往返共享 deadline，最终只以成功 exchange 作为原子持久化结果。</blockquote>
+    </article>
   </div>
 </div>
 </body>
