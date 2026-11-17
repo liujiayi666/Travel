@@ -8,6 +8,8 @@ from fastapi import APIRouter, Depends, Query, status
 from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.agent.tools.dependencies import get_tool_registry
+from app.agent.tools.registry import ToolRegistry
 from app.auth.dependencies import get_current_user, require_trusted_origin
 from app.auth.models import User
 from app.chat.presenter import to_chat_response
@@ -107,6 +109,7 @@ async def send_conversation_message(
     user: Annotated[User, Depends(get_current_user)],
     payload: SendMessageRequest,
     provider: Annotated[LlmProvider, Depends(get_llm_provider)],
+    tool_registry: Annotated[ToolRegistry, Depends(get_tool_registry)],
 ):
     reply = await send_message(
         session,
@@ -114,6 +117,7 @@ async def send_conversation_message(
         conversation_id=conversation_id,
         user_id=user.id,
         content=payload.content,
+        tool_registry=tool_registry,
     )
     return to_chat_response(reply)
 
