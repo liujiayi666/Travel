@@ -12,13 +12,13 @@ dependencies = [
     "alembic>=1.20.1",
     "pwdlib[argon2]>=0.3.1",
     "email-validator>=2.3.0",
-    "openai>=3.42.1"
+    "openai>=3.42.1",
+    "httpx>=0.28",
 ]
 
 [dependency-groups]
 dev = [
     "pytest>=8",
-    "httpx>=0.28",
     "ruff>=0.8",
 ]
 

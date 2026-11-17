@@ -14,6 +14,8 @@ class Settings(BaseSettings):
     auth_cookie_name: str = "session"
     auth_cookie_samesite: Literal["lax", "strict", "none"] = "lax"
     frontend_origin: str = "http://localhost:5173"
+    tool_timeout: float = Field(default=10.0, gt=0)
+    agent_run_timeout: float = Field(default=60.0, gt=0)
 
     llm_provider: Literal["deepseek", "glm"] = "deepseek"
     llm_timeout: float = Field(default=30.0, gt=0)
@@ -37,7 +39,11 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def validate_conversation_lease(self) -> Self:
-        if self.conversation_lease_seconds <= self.llm_timeout:
+        maximum_run_seconds = max(
+            self.llm_timeout,
+            self.agent_run_timeout,
+        )
+        if self.conversation_lease_seconds <= maximum_run_seconds:
             raise ValueError("conversation_lease_seconds must be greater than llm_timeout")
         return self
 

@@ -14,6 +14,9 @@ from sqlalchemy import delete, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
 
+from app.agent.contracts import ToolCall, ToolDefinition, ToolResult
+from app.agent.tools.dependencies import get_tool_registry
+from app.agent.tools.registry import ToolRegistry
 from app.auth.dependencies import get_current_user
 from app.auth.models import User
 from app.conversations.models import Conversation, Message
@@ -25,6 +28,8 @@ from app.llm.contracts import (
     LlmRequest,
     LlmResponse,
     LlmTextDelta,
+    LlmToolCallMessage,
+    LlmToolResultMessage,
 )
 from app.llm.dependencies import get_llm_provider
 from app.llm.errors import LlmProviderError
@@ -33,6 +38,20 @@ from app.main import create_app
 FIRST_MESSAGE = "杭州玩两天怎么安排？"
 FIRST_REPLY = "可以第一天游西湖，第二天去灵隐寺。"
 FOLLOW_UP_CONTENT = "第二天呢？"
+WEATHER_FINAL_REPLY = "杭州当天最高约 19°C，降雨概率 20%。"
+WEATHER_DEFINITION = ToolDefinition(
+    name="get_weather",
+    description="Get weather",
+    parameters={
+        "type": "object",
+        "properties": {
+            "destination": {"type": "string"},
+            "start_date": {"type": "string", "format": "date"},
+            "end_date": {"type": "string", "format": "date"},
+        },
+        "required": ["destination", "start_date", "end_date"],
+    },
+)
 
 
 @pytest.fixture
@@ -61,6 +80,7 @@ async def make_client(
     *,
     user_id: uuid.UUID | None,
     provider: LlmProvider | None = None,
+    tool_registry: ToolRegistry | None = None,
 ) -> AsyncIterator[AsyncClient]:
     app = create_app()
 
@@ -73,6 +93,9 @@ async def make_client(
         app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(id=user_id)
     if provider is not None:
         app.dependency_overrides[get_llm_provider] = lambda: provider
+    app.dependency_overrides[get_tool_registry] = lambda: (
+        tool_registry if tool_registry is not None else ToolRegistry([])
+    )
 
     try:
         async with AsyncClient(
@@ -116,6 +139,60 @@ class FakeConversationProvider:
             raise self.error
         for content in self.contents:
             yield LlmTextDelta(text=content)
+
+
+class FakeWeatherTool:
+    definition = WEATHER_DEFINITION
+
+    def __init__(self) -> None:
+        self.calls: list[ToolCall] = []
+
+    async def execute(self, call: ToolCall) -> ToolResult:
+        self.calls.append(call)
+        return ToolResult(
+            call_id=call.id,
+            name=call.name,
+            status="success",
+            data={
+                "location": {"name": "Hangzhou"},
+                "days": [
+                    {
+                        "date": "2026-11-20",
+                        "temperature_max_c": 19.4,
+                        "precipitation_probability_max": 20,
+                    }
+                ],
+            },
+            source="fake-weather",
+            observed_at=datetime.now(UTC),
+        )
+
+
+class WeatherConversationProvider:
+    def __init__(self) -> None:
+        self.requests: list[LlmRequest] = []
+
+    async def complete(self, request: LlmRequest) -> LlmResponse:
+        self.requests.append(request)
+        if len(self.requests) == 1:
+            return LlmResponse(
+                tool_call=ToolCall(
+                    id="call_weather_1",
+                    name="get_weather",
+                    arguments={
+                        "destination": "Hangzhou",
+                        "start_date": "2026-11-20",
+                        "end_date": "2026-11-20",
+                    },
+                )
+            )
+        return LlmResponse(
+            message=LlmAssistantMessage(content=WEATHER_FINAL_REPLY),
+        )
+
+    async def stream(self, request: LlmRequest) -> AsyncGenerator[LlmTextDelta, None]:
+        raise AssertionError("Weather tool test must use complete()")
+        yield LlmTextDelta(text="unreachable")
 
 
 class FakeStreamingConversationProvider:
@@ -738,6 +815,49 @@ async def test_send_message_returns_only_new_assistant_reply(
         ("user", FIRST_MESSAGE),
         ("assistant", FIRST_REPLY),
         ("user", FOLLOW_UP_CONTENT),
+    ]
+
+
+@pytest.mark.anyio
+async def test_send_message_executes_weather_tool_and_persists_final_exchange(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    user_id = await persist_user(session_factory, "Weather sender")
+    provider = WeatherConversationProvider()
+    weather_tool = FakeWeatherTool()
+
+    async with session_factory() as session:
+        conversation = Conversation(user_id=user_id, title=FIRST_MESSAGE)
+        session.add(conversation)
+        await session.commit()
+
+    async with make_client(
+        session_factory,
+        user_id=user_id,
+        provider=provider,
+        tool_registry=ToolRegistry([weather_tool]),
+    ) as client:
+        response = await client.post(
+            f"/api/conversations/{conversation.id}/messages",
+            json={"content": "杭州 11 月 20 日天气怎么样？"},
+            headers={"Origin": settings.frontend_origin},
+        )
+        history_response = await client.get(
+            f"/api/conversations/{conversation.id}/messages",
+        )
+
+    assert response.status_code == 200
+    assert response.json()["message"]["content"] == WEATHER_FINAL_REPLY
+    assert len(provider.requests) == 2
+    assert len(weather_tool.calls) == 1
+    assert provider.requests[0].tools == (WEATHER_DEFINITION,)
+    assert provider.requests[1].tools == ()
+    assert isinstance(provider.requests[1].messages[-2], LlmToolCallMessage)
+    assert isinstance(provider.requests[1].messages[-1], LlmToolResultMessage)
+    assert weather_tool.calls[0].id == "call_weather_1"
+    assert [(message["role"], message["content"]) for message in history_response.json()] == [
+        ("user", "杭州 11 月 20 日天气怎么样？"),
+        ("assistant", WEATHER_FINAL_REPLY),
     ]
 
 
