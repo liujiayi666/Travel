@@ -46,6 +46,8 @@
 | 18 | 2026-11-16 | 路线调整：A7.4.1 Runtime 一致性继续暂缓，主学习线切换到 A9 Tool Contract 与单工具闭环 |
 | 19 | 2026-11-16 | 将 LLM 基础、超时/重试、Function Calling、Prompt Injection、幻觉和评测并入 A9/A10，避免理论课脱离 Agent 主线 |
 | 20 | 2026-11-16 | 学习模式调整：Codex 直接给标准架构与完整实现答案，用户手动重写关键代码；review 直接指出差异和修复方案 |
+| 21 | 2026-11-17 | 完成 GitHub Actions Backend/Frontend 并行质量门禁；PR #25 合并为 `6a9cbc2`，两个 job 实测通过 |
+| 22 | 2026-11-17 | 完成 A9.0/A9.1 验收：LLM 基础边界、应用 ToolCall/ToolResult 契约与天气单工具 happy path；PR #24 合并为 `a949b07` |
 
 ## 易错本
 
@@ -110,6 +112,12 @@
 - SQLAlchemy Session 可能返回 identity map 中的旧对象；行锁读取 fencing 字段时必须 `populate_existing=True`，否则旧 token 会绕过校验
 - 释放 lease 必须同时匹配 `conversation_id` 与 `processing_token`；只按 conversation 清理会让旧 owner 误删新 owner 的租约
 - 调用 Provider 前必须进入 `try/finally`；否则 Provider 在进入释放逻辑前抛错时，Conversation 会被锁到 lease 过期
+- `ToolTimeoutError` 不是内置 `TimeoutError`；工具自身 timeout 会保留 Tool 错误边界，只有整体 AgentRun deadline 才转换为 `LlmTimeoutError`
+- 字符数不等于 token 数：中英文 tokenizer 不同，角色 framing、ToolDefinition、ToolCall、ToolResult 和预留输出空间都会消耗 context
+- Open-Meteo geocoding 的 `language` 不只控制返回文案，也参与名称索引匹配；中文地点用 `language=en` 可能返回空结果
+- A9.1 的工具只接在非流式 `/messages`；浏览器 SSE `/messages/stream` 尚未支持工具，页面里的回答不能默认当成 ToolResult 证据
+- 模型不知道可靠的服务端当前日期；相对日期与预报范围必须由服务端提供 today，不能依赖模型内部日期认知
+- GitHub Actions workflow 只对包含它的 base/head 生效；旧 PR 需要先合入 workflow，再把最新 main merge/rebase 到功能分支才能得到 required checks
 
 ## Phase 0 — 项目骨架（重写参考骨架）
 
@@ -347,7 +355,7 @@
 - 学到：客户端取消是“状态机 + 传输 + 资源”三件事。先标记 `cancelled` 再 abort，应用级 Controller 让生成跨 UI 卸载继续；后端用嵌套 `aclosing` 保证断开最终关闭 Provider 和 upstream stream。
 - 面试向：我把供应商流归一化为应用 SSE 事件，用显式 ChatRun 状态机和 AbortController 区分用户停止、Provider 失败与页面切换，再通过显式异步关闭链把客户端断开可靠传播到上游模型请求；正常完成才在同一事务中保存本轮两条消息。
 
-#### A9.0 LLM 基础能力校验 — 进行中
+#### A9.0 LLM 基础能力校验 — ✓ 2026-11-17
 
 | 模块 | 当前基础 | 本阶段处理方式 |
 |---|---|---|
@@ -359,7 +367,7 @@
 | 本地 / 云模型 | 已支持 OpenAI-compatible 云 Provider | 本地模型部署延后，不阻塞 Agent 主线 |
 | Timeout / Deadline | Complete 有客户端超时；Stream 有总 deadline；lease 必须更长 | 通过测试验证超时能终止并释放资源 |
 | 重试 / 指数退避 | 当前 `llm_max_retries=0` | 只对安全的只读调用设计有限重试；有副作用的工具必须结合幂等键，不能自动重放 |
-| Function Calling / Tool Proposal | 尚未实现 | A9.1 建立应用自己的 ToolCall/ToolResult 契约与单工具闭环 |
+| Function Calling / Tool Proposal | 已支持单轮 Function Calling 与供应商无关 ToolCall/ToolResult | A9.1 已完成；多轮 loop、并行工具与流式工具事件继续延后 |
 | Prompt Injection | 工具参数与外部内容都视为不可信输入 | A9.2 覆盖未知工具和非法参数，A9.3 覆盖工具结果注入 |
 | 幻觉 | 普通文本回复已存在 | A9.3 验证工具结果 grounding，A10 将“无结果不得伪造事实”纳入固定 eval |
 | 模型评测 | fake Provider 与固定失败测试 | A10 建立正常、工具失败、越权/注入、上限和取消的固定回归集 |
@@ -368,8 +376,10 @@
 - 可运行 happy path：用现有 Conversation 请求核对 Provider 实际收到的 system/history/current messages，解释模型为什么只能基于这些输入回答，以及字符预算与 token 预算为何不是同一个指标。
 - 可运行 failure path：给出“上游结果未知后自动重试带副作用工具”“工具/外部文本要求忽略系统规则”“没有天气结果却直接编造天气”三个场景，分别选出安全行为并说明对应工程边界。
 - 可观察证据：热身题和口头复习全部能自洽回答；能在 `LlmRequest`、`build_context()`、Provider 配置与 A9.1 Tool Contract 之间指出信任边界和失败传播路径。此步不新增业务代码。
+- 验收通过：用户能解释模型无状态、字符与 token 差异、role/Schema 不可替代服务端权限，以及 Provider timeout 与总 AgentRun deadline 的终止边界。
+- 环境证据：GitHub Actions Frontend/Backend 均通过；生产依赖使用 Node 24、Python 3.12、PostgreSQL 18 和 lockfile 驱动安装。
 
-#### A9.1 ToolCall / ToolResult 契约与天气 happy path — 进行中
+#### A9.1 ToolCall / ToolResult 契约与天气 happy path — ✓ 2026-11-17（PR #24；commit `a949b07`）
 
 - 训练能力：建立应用自己的 `ToolDefinition`、`ToolCall`、`ToolResult` 契约，把供应商原始 tool call 在 Provider 边界归一化；业务层只看见应用 DTO，并能完成“一次工具提议 → 一次执行 → 一次最终生成”。
 - 验收：直接回答只调用一次 Provider；天气问答最多调用两次 Provider、执行一次工具；Provider 原始字段不越过适配层；第二轮请求包含原工具提议和结构化结果；fake Provider 可复现两条路径。
@@ -388,8 +398,16 @@
 - 可运行 happy path：fake provider 第一次返回合法 `get_weather(Hangzhou, 2026-11-20..2026-11-21)`，执行器返回结构化天气；第二次调用后生成基于该结果的文本，API 得到最终回答。
 - 可运行 failure path：Provider 返回不可识别的内部 tool 结构时以稳定错误终止，不执行任何工具；这条路径只用于证明 happy-path 调度没有吞掉坏事件，完整故障矩阵在 A9.2。
 - 可观察证据：pytest 断言两种 Provider 调用的请求形态、调用次数、应用 DTO 转换和一次工具执行；真实天气 smoke test 证明从用户问题到最终回答的链路可用，且工具返回事实与最终回答一致。
+- 验收通过：后端 139 passed；前端 86 tests；Ruff、Oxlint、production build 与 GitHub Actions Backend/Frontend 全部通过。
+- 可复查测试：`test_direct_answer_uses_one_provider_call_and_no_tool`、`test_tool_response_executes_once_and_requests_final_answer`、`test_second_tool_call_does_not_start_an_agent_loop`、`test_provider_normalizes_openai_tool_call`、`test_provider_rejects_parallel_tool_calls_in_single_tool_mode`、`test_send_message_executes_weather_tool_and_persists_final_exchange`、`test_open_meteo_adapter_supports_chinese_destination_names`。
+- 真实 smoke：天津 2026-11-19 返回最低 `-1.1°C`、最高 `6.3°C`、降水概率 `0%`，最终回答包含 Open-Meteo 来源与观测时间，事实和 ToolResult 一致。
+- 关键代码：`backend/app/agent/contracts.py`、`orchestrator.py`、`agent/tools/registry.py`、`agent/tools/travel/weather.py`、`backend/app/llm/openai_compatible_provider.py`、`backend/app/conversations/service.py`。
+- 学到：模型只提出 `ToolCall`；Registry 决定白名单，工具 Pydantic Schema 决定参数是否合法，Provider 只做供应商协议归一化。
+- 学到：第二次 LLM 请求必须同时包含原 assistant ToolCall 与匹配 ToolResult；`tools=()` 把流程限制为一次工具往返，避免隐式 Agent loop。
+- 学到：工具自身 timeout 与整体 AgentRun timeout 是不同边界；失败不保存半轮 exchange，`send_message()` 的 `finally` 按 token 条件释放 lease。
+- 面试向：我把供应商 tool call 归一化为应用 DTO，用白名单和二次 Schema 验证守住执行边界；Orchestrator 在总 deadline 内完成一次工具往返，Conversation Service 只在最终回答成功后用 fencing token 原子保存 user/assistant 两条消息。
 
-#### A9.2 非法参数与工具故障 — 后续
+#### A9.2 非法参数与工具故障 — 进行中
 
 - 训练能力：把“模型提议错误”和“外部工具失败”放在正确的内部状态与 HTTP 边界，避免执行任意工具、无限重试或伪装成功。
 - 覆盖：未知工具、缺字段、额外字段、非法日期范围、工具 timeout、工具执行异常、Provider 第二轮失败和工具空结果。
@@ -449,7 +467,7 @@
 
 ## 下一步
 
-下一步先收口 A9.0，再进入 A9.1 ToolCall / ToolResult 契约与天气 happy path；A9.2 单独收口非法参数与工具故障，A9.3 再收口 Prompt Injection 与 groundedness。每一步都保持 Provider 隔离、服务端权限判断和有界调用次数。
+下一步进入 A9.2：统一未知工具、非法参数、工具 timeout、空结果和第二轮 Provider 失败的稳定错误边界，并验证失败后不落半轮 Message、lease 正常释放。随后再做 A9.3 Prompt Injection 与 groundedness。
 
 后续顺序：
 
@@ -461,9 +479,9 @@
 6. A7.5：发送消息与服务端上下文组装
 7. A8：SSE 学习级最小切片 — ✓
 8. A7.6：Conversation 并发发送串行化 — ✓
-9. A9.0：LLM 基础校验 — 进行中
-10. A9.1：ToolCall / ToolResult 契约与天气 happy path — 进行中
-11. A9.2：非法参数与工具故障 — 后续
+9. A9.0：LLM 基础校验 — ✓
+10. A9.1：ToolCall / ToolResult 契约与天气 happy path — ✓
+11. A9.2：非法参数与工具故障 — 进行中
 12. A9.3：Prompt Injection 与 groundedness — 后续
 13. A10：Agent Loop、限额、Trace 与 Eval
 14. A7.4.1：Runtime 一致性收尾 — 暂缓
@@ -475,6 +493,6 @@
 
 Agent 核心能力不延后到文件上传和协作功能之后。每个 A6–A15 步骤在开始前由 /tutor 补充具体目标、验收和证据要求；验收通过后才更新为完成。
 
-测试环境 TODO（后续学习）：在现有本地 hooks 基础上补 GitHub Actions，区分 unit / integration / e2e 的依赖与数据库配置；生产数据库永远不参与测试。
+测试环境：GitHub Actions 已覆盖前端 lint/unit/build 与后端 Ruff/migration/pytest；后续补 e2e、真实外部服务 smoke 与 eval 的分层依赖。生产数据库永远不参与测试。
 
 准备：A7.4 后续优化先统一前后端分页响应，再引入跨重试稳定的幂等键与直接缓存更新；移动端导航放在独立步骤。
