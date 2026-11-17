@@ -268,6 +268,53 @@ class LlmProvider(Protocol):
 
 第一阶段先使用非流式 `complete()`；需要流式输出时再增加 `stream()`。业务层消费自己的请求、响应与 Agent 事件，而不是直接依赖任一供应商的原始 event 类型。DeepSeek 与 GLM 的差异收敛在 Provider 适配层。
 
+### 8.1 A9.1 单工具闭环架构
+
+A9.1 只实现一个有边界的单工具闭环，不提前引入通用 Agent loop。分层为：
+
+```text
+Conversation Service
+  负责所有权、lease、历史读取、defer/事务和最终 Message 持久化
+        ↓
+Agent Orchestrator
+  负责至多 1 次工具提议、1 次工具执行和 2 次 LLM 调用
+        ↓
+LlmProvider                    ToolRegistry / Tool
+  供应商协议归一化               参数 Schema、执行、timeout、结构化结果
+        ↓                              ↓
+DeepSeek / GLM                 Open-Meteo（测试中替换为 fake client）
+```
+
+推荐文件边界：
+
+```text
+app/
+  agent/
+    contracts.py            ToolDefinition、ToolCall、ToolResult
+    orchestrator.py         单工具闭环，不依赖供应商 SDK
+    tools/
+      base.py               Tool Protocol 与只读工具边界
+      registry.py           工具白名单
+      weather.py            天气输入 Schema、结构化结果和 Open-Meteo adapter
+  llm/
+    contracts.py            LLM 消息/请求/响应，消费应用自己的 tool DTO
+    openai_compatible_provider.py
+                            OpenAI-compatible tools 编解码与错误归一化
+```
+
+首次调用携带工具定义，模型只能返回直接文本或一个应用 `ToolCall`。Orchestrator 从 Registry 获取白名单工具，工具重新验证参数并执行；第二次调用携带 assistant tool call 与 `ToolResult`，且不再提供工具，只允许生成最终文本。两次模型调用和工具执行共享同一个 Conversation lease 与总 deadline；lease 必须长于总 deadline。
+
+A9.1 先接入 `POST /api/conversations/{id}/messages` 的非流式路径。工具调用状态 SSE 事件、并行工具、未知工具/非法参数故障矩阵和工具结果 Prompt Injection 分别由后续步骤处理，避免单步同时扩大传输协议、错误系统与安全面。
+
+目录按实际能力增长，不提前建立空层：
+
+- 当前保留现有 `core/db`、`alembic`、`chat`、`conversations` 和测试布局；它们不是 A9.1 的改动范围。
+- 暂不增加 Repository；现有 Service 的查询没有跨用例复用证据。
+- `agent/context/`、`summarizer.py`、`prompts/` 等在 A10/A12 出现真实预算、prompt 复用或压缩需求时再提取。
+- `agent/tools/executor.py` 在需要统一鉴权、trace、取消或 error envelope 时再加入；当前 Registry 与 Tool 接口足够。
+- `llm/providers/` 在出现第二个真正不同的适配器时再拆；DeepSeek 与 GLM 当前共用 OpenAI-compatible adapter。
+- 新测试先放 `tests/agent/`；已有扁平测试不需要为目录美观整体迁移。
+
 ## 9. 核心数据模型
 
 ```text
@@ -527,7 +574,10 @@ outputTokens
 ### Phase 4：Agent 工具与受控循环
 
 - Provider 支持结构化工具调用，DeepSeek 默认、GLM 可切换适配。
-- 先接入一个只读工具的完整闭环，覆盖 Schema 校验、超时和稳定错误。
+- A9.0 校准 token/context、prompt roles、采样参数、deadline、有限 retry 和幻觉边界。
+- A9.1 接入一个只读天气工具，建立应用自己的 ToolCall/ToolResult 契约和 happy path。
+- A9.2 单独覆盖非法参数、未知工具、工具 timeout/失败和稳定错误映射。
+- A9.3 单独覆盖工具结果 Prompt Injection、来源 metadata 与 groundedness。
 - LLM 基础概念（token/context、prompt roles、采样参数、deadline、有限重试、幻觉与评测）跟随 Tool Contract 和 Agent Loop 学习，不单独建立脱离工程证据的理论阶段。
 - 本地模型部署不阻塞 Agent 主线，放到后续部署与模型选型步骤。
 - 单个工具闭环稳定后，再扩展 Agent loop。
