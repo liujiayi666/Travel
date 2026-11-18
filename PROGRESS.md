@@ -48,6 +48,8 @@
 | 20 | 2026-11-16 | 学习模式调整：Codex 直接给标准架构与完整实现答案，用户手动重写关键代码；review 直接指出差异和修复方案 |
 | 21 | 2026-11-17 | 完成 GitHub Actions Backend/Frontend 并行质量门禁；PR #25 合并为 `6a9cbc2`，两个 job 实测通过 |
 | 22 | 2026-11-17 | 完成 A9.0/A9.1 验收：LLM 基础边界、应用 ToolCall/ToolResult 契约与天气单工具 happy path；PR #24 合并为 `a949b07` |
+| 23 | 2026-11-18 | 完成 A9.2 验收：ToolError HTTP 映射、只读 retry、wall-clock 超时和可恢复 ToolResult；PR #28 合并为 `ecef431` |
+| 24 | 2026-11-18 | 完成 A9.3 验收：Prompt Injection 信任边界、外部字段约束、provenance 与 grounded smoke；PR #29 合并为 `b717cf2` |
 
 ## 易错本
 
@@ -118,6 +120,11 @@
 - A9.1 的工具只接在非流式 `/messages`；浏览器 SSE `/messages/stream` 尚未支持工具，页面里的回答不能默认当成 ToolResult 证据
 - 模型不知道可靠的服务端当前日期；相对日期与预报范围必须由服务端提供 today，不能依赖模型内部日期认知
 - GitHub Actions workflow 只对包含它的 base/head 生效；旧 PR 需要先合入 workflow，再把最新 main merge/rebase 到功能分支才能得到 required checks
+- Prompt 不是权限边界；即使模型被工具文本诱导，服务端仍靠工具 allowlist、`tools=()` 和当前 Session 身份限制可执行动作
+- Schema 只约束结构和类型，并丢弃未声明字段，不能“净化”允许字段中的恶意自然语言；ToolResult 必须保持低信任 `tool` role
+- “地点找不到/无预报”是预期领域结果，应转 `ToolResult(status="error")` 并由第二次 LLM 安全降级；工具/Provider 故障才走 502/504 且不落库
+- HTTPX 的 timeout 是 connect/read/write/pool 等单操作限制，不是整次 GET wall clock；attempt 预算必须有独立 `asyncio.timeout`
+- 测试应复用 production 类型、角色 union 和 ToolDefinition；只有对外错误码、HTTP 状态和预期文本可作为契约字面量保留
 
 ## Phase 0 — 项目骨架（重写参考骨架）
 
@@ -407,7 +414,7 @@
 - 学到：工具自身 timeout 与整体 AgentRun timeout 是不同边界；失败不保存半轮 exchange，`send_message()` 的 `finally` 按 token 条件释放 lease。
 - 面试向：我把供应商 tool call 归一化为应用 DTO，用白名单和二次 Schema 验证守住执行边界；Orchestrator 在总 deadline 内完成一次工具往返，Conversation Service 只在最终回答成功后用 fencing token 原子保存 user/assistant 两条消息。
 
-#### A9.2 非法参数与工具故障 — 进行中
+#### A9.2 非法参数与工具故障 — ✓ 2026-11-18（PR #28；commit `ecef431`）
 
 - 训练能力：把“模型提议错误”和“外部工具失败”放在正确的内部状态与 HTTP 边界，避免执行任意工具、无限重试或伪装成功。
 - 覆盖：未知工具、缺字段、额外字段、非法日期范围、工具 timeout、工具执行异常、Provider 第二轮失败和工具空结果。
@@ -416,8 +423,14 @@
 - 可运行 failure path：每个故障都断言 Provider 调用次数、工具调用次数、消息是否落库、lease 是否释放和客户端稳定错误；任何未白名单工具都执行 0 次。
 - 可观察证据：fake weather executor 的阻塞、超时与抛错测试；API 集成测试；真实 PostgreSQL 证明失败没有半轮 Message。
 - 明确不做：自动修复模型参数、通用重试队列、跨工具 fallback 和多步 Agent loop。
+- 验收通过：后端 165 passed；前端 86 tests；Ruff、Oxlint、production build 与 GitHub Actions Backend/Frontend 全部通过。
+- 可复查测试：`test_tool_error_handler_returns_stable_public_response`、`test_tool_failures_return_stable_errors_without_partial_persistence`、`test_open_meteo_retries_transient_geocoding_failure`、`test_open_meteo_retries_transient_forecast_failure_without_repeating_geocoding`、`test_open_meteo_does_not_retry_non_retryable_http_status`、`test_open_meteo_stops_after_max_attempts`、`test_open_meteo_enforces_wall_clock_timeout_per_get`。
+- 学到：未知工具/非法参数是模型输出不可执行，应稳定映射为 502；工具 timeout 为 504；错误响应和日志不能泄露目的地、上游正文或内部参数。
+- 学到：只读天气 GET 可有限重试 408/429/5xx 和传输错误，非法 JSON、4xx 与参数错误不重试；每次 attempt 需要 wall-clock cap，不能只信 HTTPX 分阶段 timeout。
+- 学到：地点不存在和无预报数据属于可恢复领域结果，转换为 `ToolResult(status="error")` 后仍可完成第二次 LLM 与正常落库；系统故障才不落半轮 exchange。
+- 面试向：我用稳定错误码、供应商适配层重试策略、单次 wall-clock cap 和 fencing lease 把工具故障限制在明确边界；领域空结果降级给模型，系统故障则在释放 lease 后映射 502/504，保证失败可观测且不污染会话历史。
 
-#### A9.3 Prompt Injection 与 groundedness — 后续
+#### A9.3 Prompt Injection 与 groundedness — ✓ 2026-11-18（PR #29；commit `b717cf2`）
 
 - 训练能力：区分“工具结果为模型提供事实”和“工具结果可向模型下达指令”这两种错误假设；证明权限与最终状态不依赖模型自觉。
 - 覆盖：工具字段包含“忽略系统提示、泄露密钥、调用其他工具”等文本；天气结果与用户问题相关但 location/date 不匹配；无工具结果；结果含来源与抓取时间。
@@ -426,8 +439,15 @@
 - 可运行 failure path：注入文本和伪造 `user_id` 不改变工具白名单、当前用户身份或执行次数；无结果时最终回答包含明确的“无法获取/无法确认”，不含虚构天气值。
 - 可观察证据：固定 fake tool 结果 + fake Provider 的契约测试；对最终文本做事实字段与禁止事实断言，不比较整段措辞；真实 smoke test 记录工具来源与最终回答，不记录密钥或完整敏感 prompt。
 - 明确不做：把模型文本当授权系统、自动信任外部网页指令、跨 Conversation 长期记忆和通用安全 benchmark。
+- 验收通过：后端 173 passed；前端 86 tests；Ruff、Oxlint、production build 与 GitHub Actions Backend/Frontend 全部通过。
+- 可复查测试：`test_tool_result_injection_stays_in_tool_role`、`test_tool_result_injection_cannot_execute_a_second_tool`、`test_tool_result_injection_cannot_execute_second_tool_or_persist_messages`、`test_weather_location_rejects_oversized_or_out_of_range_fields`、`test_weather_day_rejects_out_of_range_values`、`test_weather_forecast_rejects_more_than_supported_days`、`test_open_meteo_rejects_oversized_location_text_before_forecast`。
+- 真实 smoke：天津 2026-11-19 返回最低 `-0.9°C`、最高 `6.2°C`、降水概率 `0%`，来源与观测时间明确；建议只基于返回数值，没有历史均温、其他天气字段或“较常年偏冷”等无依据事实。
+- 学到：Prompt 降低注入成功率，但权限保证来自服务端 allowlist、第二次请求 `tools=()`、当前 Session 身份和工具只执行一次。
+- 学到：ToolResult 必须以 `role="tool"` 进入模型；不能把外部字段提升成 system message。Schema 限制结构与长度，但不能净化允许字段中的自然语言。
+- 学到：`source`、`observed_at` 与 error code 必须由服务端生成；测试应复用 production ToolDefinition/role 类型，只把对外契约值保留为字面量。
+- 面试向：我把工具输出限制为有界结构化 `tool` 数据，用 allowlist 和单轮 `tools=()` 让注入无法升级为权限；再通过来源 metadata、安全降级和 deterministic injection tests 把最终回答约束在可追溯事实上，真实模型评估留给 A10 固定 eval。
 
-### A10 Agent Loop、限额、Trace 与 Eval — 后续
+### A10 Agent Loop、限额、Trace 与 Eval — 进行中
 
 - 训练能力：受控循环与可靠性。明确最大步骤、总时长、token/成本上限，以及 completed / failed / cancelled / max_steps_reached 等终止状态。
 - 验收：固定 eval 覆盖正常回答、正常工具调用、工具失败、非法参数、达到上限、Provider 失败、取消和 Prompt Injection；记录 run/tool 轨迹、耗时、token 与失败原因；回归集包含 mock、人工标注结果和可重复运行命令
@@ -467,7 +487,7 @@
 
 ## 下一步
 
-下一步进入 A9.2：统一未知工具、非法参数、工具 timeout、空结果和第二轮 Provider 失败的稳定错误边界，并验证失败后不落半轮 Message、lease 正常释放。随后再做 A9.3 Prompt Injection 与 groundedness。
+下一步进入 A10：把单工具固定流程升级为受控 Agent loop，明确最大步骤、总时长与 token/成本上限，建立 completed / failed / cancelled / max_steps_reached 终止状态，并为正常、工具失败、越权/注入、超限和取消建立可重复 eval。
 
 后续顺序：
 
@@ -481,9 +501,9 @@
 8. A7.6：Conversation 并发发送串行化 — ✓
 9. A9.0：LLM 基础校验 — ✓
 10. A9.1：ToolCall / ToolResult 契约与天气 happy path — ✓
-11. A9.2：非法参数与工具故障 — 进行中
-12. A9.3：Prompt Injection 与 groundedness — 后续
-13. A10：Agent Loop、限额、Trace 与 Eval
+11. A9.2：非法参数与工具故障 — ✓
+12. A9.3：Prompt Injection 与 groundedness — ✓
+13. A10：Agent Loop、限额、Trace 与 Eval — 进行中
 14. A7.4.1：Runtime 一致性收尾 — 暂缓
 15. A11：RAG 知识检索工具
 16. A12：Conversation 历史治理与高级压缩
