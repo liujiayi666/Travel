@@ -10,12 +10,18 @@ from typing import Any
 
 import pytest
 from httpx import ASGITransport, AsyncClient
-from sqlalchemy import delete, update
+from sqlalchemy import delete, select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
 
 from app.agent.contracts import ToolCall, ToolDefinition, ToolResult
 from app.agent.tools.dependencies import get_tool_registry
+from app.agent.tools.error import (
+    ToolExecutionError,
+    ToolInvalidArgumentsError,
+    ToolNotAllowedError,
+    ToolTimeoutError,
+)
 from app.agent.tools.registry import ToolRegistry
 from app.auth.dependencies import get_current_user
 from app.auth.models import User
@@ -166,6 +172,18 @@ class FakeWeatherTool:
             source="fake-weather",
             observed_at=datetime.now(UTC),
         )
+
+
+class FailingTool:
+    definition = WEATHER_DEFINITION
+
+    def __init__(self, error: Exception) -> None:
+        self.error = error
+        self.calls: list[ToolCall] = []
+
+    async def execute(self, call: ToolCall) -> ToolResult:
+        self.calls.append(call)
+        raise self.error
 
 
 class WeatherConversationProvider:
@@ -859,6 +877,97 @@ async def test_send_message_executes_weather_tool_and_persists_final_exchange(
         ("user", "杭州 11 月 20 日天气怎么样？"),
         ("assistant", WEATHER_FINAL_REPLY),
     ]
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("error", "expected_status", "expected_code", "expected_detail"),
+    [
+        (
+            ToolNotAllowedError("get_weather"),
+            502,
+            "tool_not_allowed",
+            "The requested tool is not available.",
+        ),
+        (
+            ToolInvalidArgumentsError("private invalid arguments"),
+            502,
+            "tool_invalid_arguments",
+            "The language model returned invalid tool arguments.",
+        ),
+        (
+            ToolTimeoutError("private tool timeout"),
+            504,
+            "tool_timeout",
+            "The tool request timed out.",
+        ),
+        (
+            ToolExecutionError("private upstream response"),
+            502,
+            "tool_execution_error",
+            "The tool request failed.",
+        ),
+    ],
+)
+async def test_tool_failures_return_stable_errors_without_partial_persistence(
+    session_factory: async_sessionmaker[AsyncSession],
+    error: Exception,
+    expected_status: int,
+    expected_code: str,
+    expected_detail: str,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    user_id = await persist_user(session_factory, "Tool failure")
+    provider = WeatherConversationProvider()
+
+    if isinstance(error, ToolNotAllowedError):
+        registry = ToolRegistry([])
+        failing_tool: FailingTool | None = None
+    else:
+        failing_tool = FailingTool(error)
+        registry = ToolRegistry([failing_tool])
+
+    async with session_factory() as session:
+        conversation = Conversation(user_id=user_id, title="Tool failure")
+        session.add(conversation)
+        await session.commit()
+        conversation_id = conversation.id
+
+    with caplog.at_level(logging.WARNING):
+        async with make_client(
+            session_factory,
+            user_id=user_id,
+            provider=provider,
+            tool_registry=registry,
+        ) as client:
+            response = await client.post(
+                f"/api/conversations/{conversation_id}/messages",
+                json={"content": "杭州 11 月 20 日天气怎么样？"},
+                headers={"Origin": settings.frontend_origin},
+            )
+            history_response = await client.get(
+                f"/api/conversations/{conversation_id}/messages",
+            )
+
+    assert response.status_code == expected_status
+    assert response.json() == {
+        "code": expected_code,
+        "detail": expected_detail,
+    }
+    assert history_response.json() == []
+    assert len(provider.requests) == 1
+    assert failing_tool is None or len(failing_tool.calls) == 1
+    assert error.args[0] not in response.text
+    assert error.args[0] not in caplog.text
+
+    async with session_factory() as session:
+        conversation = await session.scalar(
+            select(Conversation).where(Conversation.id == conversation_id)
+        )
+
+    assert conversation is not None
+    assert conversation.processing_token is None
+    assert conversation.processing_expires_at is None
 
 
 @pytest.mark.anyio
