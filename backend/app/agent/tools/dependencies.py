@@ -19,6 +19,7 @@ def create_tool_runtime() -> ToolRuntime:
     weather_tool = WeatherTool(
         OpenMeteoWeatherClient(
             client,
+            request_timeout=settings.tool_request_timeout,
             max_attempts=settings.tool_max_attempts,
             retry_base_delay=settings.tool_retry_base_delay,
         ),

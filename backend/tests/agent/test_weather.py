@@ -69,11 +69,13 @@ def make_forecast() -> WeatherForecast:
 def make_open_meteo_adapter(
     client: httpx.AsyncClient,
     *,
+    request_timeout: float = 3.0,
     max_attempts: int = 3,
     retry_base_delay: float = 0.001,
 ) -> OpenMeteoWeatherClient:
     return OpenMeteoWeatherClient(
         client,
+        request_timeout=request_timeout,
         max_attempts=max_attempts,
         retry_base_delay=retry_base_delay,
     )
@@ -579,6 +581,31 @@ async def test_open_meteo_maps_repeated_request_timeouts_to_tool_timeout(
 
     assert calls == 3
     assert sleeps == [0.2, 0.4]
+
+
+@pytest.mark.anyio
+async def test_open_meteo_enforces_wall_clock_timeout_per_get() -> None:
+    calls = 0
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        await asyncio.sleep(0.05)
+        return httpx.Response(200, json=GEOCODING_RESPONSE)
+
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(handler),
+    ) as http_client:
+        adapter = make_open_meteo_adapter(
+            http_client,
+            request_timeout=0.001,
+            max_attempts=2,
+            retry_base_delay=0.001,
+        )
+        with pytest.raises(ToolTimeoutError):
+            await adapter.get_daily_forecast(make_query())
+
+    assert calls == 2
 
 
 @pytest.mark.anyio
