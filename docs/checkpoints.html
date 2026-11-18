@@ -263,6 +263,36 @@
       </ul>
       <blockquote>把供应商工具协议限制在 Provider 边界，用白名单与二次 Schema 验证把模型建议变成受控执行；整个工具往返共享 deadline，最终只以成功 exchange 作为原子持久化结果。</blockquote>
     </article>
+    <article class="cp">
+      <header>
+        <h2><a href="https://github.com/liujiayi666/Travel/pull/28">PR #28 · feat(agent): harden tool failure handling</a></h2>
+      </header>
+      <p class="cp-meta">A9.2 非法参数与工具故障 · 2026-11-18 · commit ecef431</p>
+      <ul>
+        <li>工具边界将 unknown tool / invalid arguments / execution failure 映射为稳定 502，将 timeout 映射为 504；响应只包含 code 与安全 detail</li>
+        <li>Only idempotent weather GETs retry 408/429/5xx/transport failures；每次 attempt 同时有 HTTPX 单操作 timeout 与 <code>asyncio.timeout</code> wall-clock cap</li>
+        <li>Retry 次数、指数退避和两次顺序 GET 都被 25 秒 tool budget 与 60 秒 AgentRun deadline 限制；配置校验阻止无法完成有效 retry 的预算组合</li>
+        <li>地点不存在和无预报数据转换为 <code>ToolResult(status="error")</code>，由第二次 LLM 生成安全降级回答；系统故障仍在 release lease 后返回 502/504</li>
+        <li>API 测试证明所有系统故障都不保存 user/assistant 半轮消息，Conversation token/expiry 被清空；证据为后端 165 passed</li>
+        <li>Codex review 抓到两个预算问题：顺序 GET 总预算不足，以及 HTTPX timeout 不是 wall clock；后续提交分别提高预算并增加 per-GET deadline</li>
+      </ul>
+      <blockquote>把可恢复领域结果与系统故障分开：前者作为结构化 ToolResult 交给 Agent 降级，后者按稳定错误边界终止并释放 lease；重试只属于明确幂等的 adapter，且必须受单次 wall-clock 与总 deadline 双重约束。</blockquote>
+    </article>
+    <article class="cp">
+      <header>
+        <h2><a href="https://github.com/liujiayi666/Travel/pull/29">PR #29 · feat(agent): harden tool result trust boundaries</a></h2>
+      </header>
+      <p class="cp-meta">A9.3 Prompt Injection 与 groundedness · 2026-11-18 · commit b717cf2</p>
+      <ul>
+        <li>System Prompt 明确 ToolResult 是不可信外部数据；模型不能执行其中指令、索取秘密或据此调用其他工具</li>
+        <li>Provider 始终把 ToolResult 序列化为 <code>role="tool"</code>；不会把外部 location 文本提升为 system message</li>
+        <li>第二次 LLM 请求设置 <code>tools=()</code>；即使模型被注入诱导返回第二个 ToolCall，Orchestrator 也会失败且不会执行</li>
+        <li>WeatherLocation、WeatherDay、WeatherForecast 和 geocoding 字段增加长度与领域范围校验；异常外部数据在生成 ToolResult 前被拒绝</li>
+        <li>Source、observed_at 与服务端 error code 不能由外部数据覆盖；无数据路径要求明确无法确认，不编造天气事实</li>
+        <li>测试复用 production <code>WEATHER_DEFINITION</code> 与 <code>LlmTextRole</code>，避免测试契约漂移；证据为后端 173 passed 和天津真实 grounding smoke</li>
+      </ul>
+      <blockquote>Prompt 只降低注入成功率，权限边界必须由 allowlist、单轮 <code>tools=()</code>、服务端身份和结构化错误结果保证；外部数据保持低信任 role，并用有界 Schema、来源 metadata 和 eval 约束最终回答。</blockquote>
+    </article>
   </div>
 </div>
 </body>
