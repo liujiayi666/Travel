@@ -14,8 +14,6 @@ class Settings(BaseSettings):
     auth_cookie_name: str = "session"
     auth_cookie_samesite: Literal["lax", "strict", "none"] = "lax"
     frontend_origin: str = "http://localhost:5173"
-    tool_timeout: float = Field(default=10.0, gt=0)
-    agent_run_timeout: float = Field(default=60.0, gt=0)
 
     llm_provider: Literal["deepseek", "glm"] = "deepseek"
     llm_timeout: float = Field(default=30.0, gt=0)
@@ -37,6 +35,16 @@ class Settings(BaseSettings):
 
     conversation_lease_seconds: int = Field(default=90, gt=0)
 
+    # 单次 HTTP request: 3s
+    # 整个 Tool:        25s
+    # 整个 AgentRun:    60s
+    # Conversation lease: 90s
+    tool_timeout: float = Field(default=25.0, gt=0)
+    tool_request_timeout: float = Field(default=3.0, gt=0)
+    tool_max_attempts: int = Field(default=3, ge=1, le=5)
+    tool_retry_base_delay: float = Field(default=0.2, gt=0, le=5)
+    agent_run_timeout: float = Field(default=60.0, gt=0)
+
     @model_validator(mode="after")
     def validate_conversation_lease(self) -> Self:
         maximum_run_seconds = max(
@@ -50,6 +58,30 @@ class Settings(BaseSettings):
     @property
     def auth_cookie_secure(self) -> bool:
         return self.app_env == "production"
+
+    @model_validator(mode="after")
+    def validate_timeout_layers(self) -> Self:
+        if self.tool_timeout <= self.tool_request_timeout:
+            raise ValueError("tool_timeout must be greater than tool_request_timeout")
+
+        retry_wait_seconds = self.tool_retry_base_delay * (2 ** (self.tool_max_attempts - 1) - 1)
+        single_phase_budget = (
+            self.tool_request_timeout * self.tool_max_attempts + retry_wait_seconds
+        )
+        sequential_weather_budget = single_phase_budget * 2
+        if self.tool_timeout < sequential_weather_budget:
+            raise ValueError("tool_timeout must cover two sequential weather request budgets")
+
+        if self.agent_run_timeout <= self.tool_timeout:
+            raise ValueError("agent_run_timeout must be greater than tool_timeout")
+
+        maximum_run_seconds = max(
+            self.llm_timeout,
+            self.agent_run_timeout,
+        )
+        if self.conversation_lease_seconds <= maximum_run_seconds:
+            raise ValueError("conversation_lease_seconds must exceed all run timeouts")
+        return self
 
 
 settings = Settings()
