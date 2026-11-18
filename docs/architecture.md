@@ -315,6 +315,32 @@ A9.1 先接入 `POST /api/conversations/{id}/messages` 的非流式路径。工�
 - `llm/providers/` 在出现第二个真正不同的适配器时再拆；DeepSeek 与 GLM 当前共用 OpenAI-compatible adapter。
 - 新测试先放 `tests/agent/`；已有扁平测试不需要为目录美观整体迁移。
 
+### 8.2 A10 受控 Agent Loop
+
+A10 把 A9.1 的固定单工具流程升级为通用但有界的循环，同时保持 Provider、Tool 和 Conversation 三层职责不变：
+
+```text
+Conversation Service
+  ownership / lease / context / final Message persistence
+        ↓
+Agent Orchestrator
+  LLM decision → allowlist/tool → ToolResult → LLM decision → terminal state
+        ↓
+LlmProvider                         ToolRegistry
+  provider-neutral LLM DTO            validated tool execution
+```
+
+循环控制规则：
+
+- `max_steps` 定义为一次 AgentRun 最多允许的 LLM 决策次数。直接回答消耗 1 步；每次工具提议也消耗 1 步。
+- 每一步都只接受至多一个应用 `ToolCall`，并从 Registry 重新确认工具白名单；模型不能凭工具结果文本扩大权限。
+- 在最后一次允许的决策中，如果模型仍提议工具，服务端先校验工具名，但不执行该工具，以 `max_steps_reached` 终止。这样可以避免没有后续回答预算时执行未来可能带副作用的工具。
+- 工具执行成功后，按顺序把匹配的 assistant ToolCall 与 tool ToolResult 加入下一轮请求；可恢复的领域错误以 `ToolResult(status="error")` 交给模型，技术型 Tool/Provider 失败保持原有错误边界。
+- 整个循环共享一个 Run deadline；用户取消必须停止循环并沿 Provider/Tool 调用链传播，不能留下永久 running 状态。
+- `completed`、`failed`、`cancelled`、`max_steps_reached` 是运行终态，不是 HTTP 状态。Conversation 只在获得完整最终回答后原子保存本轮 Message。
+
+A10 分四个学习切片：A10.1 受控循环与终止状态；A10.2 deadline、usage 与成本预算；A10.3 AgentRun/ToolCall trace；A10.4 固定 eval。工具事件 SSE 不在这些前置切片中伪装成已完成能力，后续单独接入。
+
 ## 9. 核心数据模型
 
 ```text
