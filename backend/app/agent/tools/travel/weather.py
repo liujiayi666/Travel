@@ -60,27 +60,34 @@ class WeatherQuery(BaseModel):
 class WeatherLocation(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    name: str
-    country: str | None = None
-    longitude: float
-    latitude: float
-    timezone: str
+    name: str = Field(min_length=1, max_length=120)
+    country: str | None = Field(default=None, max_length=120)
+    longitude: float = Field(ge=-180, le=180)
+    latitude: float = Field(ge=-90, le=90)
+    timezone: str = Field(min_length=1, max_length=64)
 
 
 class WeatherDay(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     date: date
-    temperature_min_c: float
-    temperature_max_c: float
-    precipitation_probability_max: int | None = None
+    temperature_min_c: float = Field(ge=-100, le=70)
+    temperature_max_c: float = Field(ge=-100, le=70)
+    precipitation_probability_max: int | None = Field(
+        default=None,
+        ge=0,
+        le=100,
+    )
 
 
 class WeatherForecast(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     location: WeatherLocation
-    days: list[WeatherDay] = Field(min_length=1)
+    days: list[WeatherDay] = Field(
+        min_length=1,
+        max_length=MAX_FORECAST_DAYS,
+    )
 
 
 class WeatherClient(Protocol):
@@ -88,11 +95,11 @@ class WeatherClient(Protocol):
 
 
 class _GeocodingResult(BaseModel):
-    name: str
-    country: str | None = None
-    latitude: float
-    longitude: float
-    timezone: str | None = None
+    name: str = Field(min_length=1, max_length=120)
+    country: str | None = Field(default=None, max_length=120)
+    latitude: float = Field(ge=-90, le=90)
+    longitude: float = Field(ge=-180, le=180)
+    timezone: str | None = Field(default=None, max_length=64)
 
 
 class _GeocodingResponse(BaseModel):
