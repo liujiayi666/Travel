@@ -30,5 +30,11 @@
   "python.terminal.useEnvFile": true,
   "python.analysis.extraPaths": [
     "${workspaceFolder}/backend"
-  ]
+  ],
+  "python.testing.cwd": "${workspaceFolder}/backend",
+  "python.testing.pytestArgs": [
+    "tests"
+  ],
+  "python.testing.pytestEnabled": true,
+  "python.testing.unittestEnabled": false
 }
