@@ -6,11 +6,13 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from app.agent.contracts import ToolCall, ToolDefinition, ToolResult
 
+type LlmTextRole = Literal["system", "user", "assistant"]
+
 
 class LlmMessage(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    role: Literal["system", "user", "assistant"]
+    role: LlmTextRole
     content: str = Field(min_length=1)
 
 

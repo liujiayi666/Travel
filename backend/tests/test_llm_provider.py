@@ -5,7 +5,12 @@ from unittest.mock import AsyncMock
 import pytest
 from openai import APIError, APITimeoutError, AsyncOpenAI
 
-from app.llm.contracts import LlmAssistantMessage, LlmMessage, LlmRequest
+from app.llm.contracts import (
+    LlmAssistantMessage,
+    LlmMessage,
+    LlmRequest,
+    LlmTextRole,
+)
 from app.llm.errors import LlmInvalidRequestError, LlmProviderError, LlmTimeoutError
 from app.llm.openai_compatible_provider import (
     OpenAICompatibleProvider,
@@ -77,7 +82,7 @@ def make_provider(client: AsyncOpenAI) -> OpenAICompatibleProvider:
 def make_message(
     text: str = "hello",
     *,
-    role: str = "user",
+    role: LlmTextRole = "user",
 ) -> LlmMessage:
     return LlmMessage(role=role, content=text)
 
@@ -87,14 +92,18 @@ async def test_provider_returns_assistant_message_and_maps_messages_to_sdk() -> 
     client, create = make_client(make_completion("杭州周末可以去西湖。"))
     provider = make_provider(client)
 
-    response = await provider.complete(LlmRequest(messages=[make_message("杭州周末去哪玩？")]))
+    request = LlmRequest(messages=[make_message("杭州周末去哪玩？")])
+
+    response = await provider.complete(request)
 
     assert response.message == LlmAssistantMessage(
         role="assistant",
         content="杭州周末可以去西湖。",
     )
     create.assert_awaited_once()
-    call = create.await_args.kwargs
+    await_args = create.await_args
+    assert await_args is not None
+    call = await_args.kwargs
     assert call["model"] == "test-model"
     assert call["max_tokens"] == MAX_TOKENS
     assert call["messages"] == [
@@ -136,7 +145,7 @@ async def test_provider_rejects_missing_or_blank_text(content: str | None) -> No
 
 
 @pytest.mark.parametrize("role", ["system", "assistant", "user"])
-def test_provider_maps_supported_message_roles(role: str) -> None:
+def test_provider_maps_supported_message_roles(role: LlmTextRole) -> None:
     message = make_message(role=role)
 
     assert to_sdk_message(message) == {
@@ -188,7 +197,9 @@ async def test_provider_streams_non_empty_text_and_closes_upstream() -> None:
     assert deltas == ["先去", "西湖", "。"]
     assert upstream.closed is True
     create.assert_awaited_once()
-    call = create.await_args.kwargs
+    await_args = create.await_args
+    assert await_args is not None
+    call = await_args.kwargs
     assert call["model"] == "test-model"
     assert call["max_tokens"] == MAX_TOKENS
     assert call["stream"] is True
