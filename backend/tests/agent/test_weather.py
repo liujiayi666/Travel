@@ -629,6 +629,12 @@ async def test_open_meteo_does_not_retry_invalid_json(
             },
             "agent_run_timeout must be greater",
         ),
+        (
+            {
+                "tool_timeout": 19,
+            },
+            "must cover two sequential weather request budgets",
+        ),
     ],
 )
 def test_settings_validate_timeout_layering(
@@ -637,3 +643,15 @@ def test_settings_validate_timeout_layering(
 ) -> None:
     with pytest.raises(ValidationError, match=expected_message):
         Settings.model_validate(settings_kwargs)
+
+
+def test_default_tool_timeout_covers_two_sequential_retry_paths() -> None:
+    settings = Settings(_env_file=None)
+    retry_wait_seconds = settings.tool_retry_base_delay * (
+        2 ** (settings.tool_max_attempts - 1) - 1
+    )
+    single_phase_budget = (
+        settings.tool_request_timeout * settings.tool_max_attempts + retry_wait_seconds
+    )
+
+    assert settings.tool_timeout >= single_phase_budget * 2
