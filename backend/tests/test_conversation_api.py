@@ -16,7 +16,7 @@ from sqlalchemy.pool import NullPool
 
 from app.agent.contracts import ToolCall, ToolResult
 from app.agent.tools.dependencies import get_tool_registry
-from app.agent.tools.error import (
+from app.agent.tools.errors import (
     ToolExecutionError,
     ToolInvalidArgumentsError,
     ToolNotAllowedError,
@@ -280,6 +280,22 @@ class InjectionProvider(WeatherConversationProvider):
                 id="call_delete",
                 name="delete_everything",
                 arguments={},
+            )
+        )
+
+
+class AlwaysToolProvider(WeatherConversationProvider):
+    async def complete(self, request: LlmRequest) -> LlmResponse:
+        self.requests.append(request)
+        return LlmResponse(
+            tool_call=ToolCall(
+                id=f"call_weather_{len(self.requests)}",
+                name="get_weather",
+                arguments={
+                    "destination": "Hangzhou",
+                    "start_date": "2026-11-20",
+                    "end_date": "2026-11-20",
+                },
             )
         )
 
@@ -950,7 +966,7 @@ async def test_send_message_executes_weather_tool_and_persists_final_exchange(
     assert len(provider.requests) == 2
     assert len(weather_tool.calls) == 1
     assert provider.requests[0].tools == (WEATHER_DEFINITION,)
-    assert provider.requests[1].tools == ()
+    assert provider.requests[1].tools == (WEATHER_DEFINITION,)
     assert isinstance(provider.requests[1].messages[-2], LlmToolCallMessage)
     assert isinstance(provider.requests[1].messages[-1], LlmToolResultMessage)
     assert weather_tool.calls[0].id == "call_weather_1"
@@ -958,6 +974,56 @@ async def test_send_message_executes_weather_tool_and_persists_final_exchange(
         ("user", "杭州 11 月 20 日天气怎么样？"),
         ("assistant", WEATHER_FINAL_REPLY),
     ]
+
+
+@pytest.mark.anyio
+async def test_agent_max_steps_returns_stable_error_without_partial_persistence(
+    session_factory: async_sessionmaker[AsyncSession],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    user_id = await persist_user(session_factory, "Max steps")
+    provider = AlwaysToolProvider()
+    weather_tool = FakeWeatherTool()
+    monkeypatch.setattr(settings, "agent_max_steps", 2)
+
+    async with session_factory() as session:
+        conversation = Conversation(user_id=user_id, title="Max steps")
+        session.add(conversation)
+        await session.commit()
+        conversation_id = conversation.id
+
+    async with make_client(
+        session_factory,
+        user_id=user_id,
+        provider=provider,
+        tool_registry=ToolRegistry([weather_tool]),
+    ) as client:
+        response = await client.post(
+            f"/api/conversations/{conversation_id}/messages",
+            json={"content": "一直查询天气"},
+            headers={"Origin": settings.frontend_origin},
+        )
+        history_response = await client.get(
+            f"/api/conversations/{conversation_id}/messages",
+        )
+
+    assert response.status_code == 502
+    assert response.json() == {
+        "code": "agent_max_steps_reached",
+        "detail": "The agent could not finish within its allowed steps.",
+    }
+    assert history_response.json() == []
+    assert len(provider.requests) == 2
+    assert len(weather_tool.calls) == 1
+
+    async with session_factory() as session:
+        conversation = await session.scalar(
+            select(Conversation).where(Conversation.id == conversation_id)
+        )
+
+    assert conversation is not None
+    assert conversation.processing_token is None
+    assert conversation.processing_expires_at is None
 
 
 @pytest.mark.anyio
@@ -1043,10 +1109,13 @@ async def test_tool_result_injection_cannot_execute_second_tool_or_persist_messa
         )
 
     assert response.status_code == 502
-    assert response.json()["code"] == "llm_provider_error"
+    assert response.json() == {
+        "code": "tool_not_allowed",
+        "detail": "The requested tool is not available.",
+    }
     assert history_response.json() == []
     assert len(provider.requests) == 2
-    assert provider.requests[1].tools == ()
+    assert provider.requests[1].tools == (WEATHER_DEFINITION,)
     assert len(weather_tool.calls) == 1
 
     tool_result_message = provider.requests[1].messages[-1]

@@ -44,6 +44,7 @@ class Settings(BaseSettings):
     tool_max_attempts: int = Field(default=3, ge=1, le=5)
     tool_retry_base_delay: float = Field(default=0.2, gt=0, le=5)
     agent_run_timeout: float = Field(default=60.0, gt=0)
+    agent_max_steps: int = Field(default=5, ge=1, le=10)
 
     @model_validator(mode="after")
     def validate_conversation_lease(self) -> Self:

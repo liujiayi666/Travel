@@ -10,7 +10,7 @@ from anyio import CancelScope
 from sqlalchemy import func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.agent.orchestrator import answer_with_one_tool
+from app.agent.orchestrator import run_agent
 from app.agent.tools.registry import ToolRegistry
 from app.conversations.errors import (
     ConversationBusyError,
@@ -371,15 +371,8 @@ async def send_message(
         session, user_id=user_id, conversation_id=conversation_id, content=content
     )
     try:
-        # reply = await answer_message(
-        #     provider,
-        #     request=prepared_message_stream.request,
-        # )
-
-        reply = await answer_with_one_tool(
-            provider,
-            registry,
-            prepared_message_stream.request,
+        reply = await run_agent(
+            provider, registry, prepared_message_stream.request, max_steps=settings.agent_max_steps
         )
         await _persist_exchange(
             session,

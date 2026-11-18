@@ -1,7 +1,7 @@
 import pytest
 
 from app.agent.contracts import ToolCall, ToolDefinition, ToolResult
-from app.agent.tools.error import ToolNotAllowedError
+from app.agent.tools.errors import ToolNotAllowedError
 from app.agent.tools.registry import ToolRegistry
 
 

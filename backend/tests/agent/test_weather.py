@@ -6,7 +6,7 @@ import pytest
 from pydantic import ValidationError
 
 from app.agent.contracts import ToolCall
-from app.agent.tools.error import (
+from app.agent.tools.errors import (
     ToolExecutionError,
     ToolResultError,
     ToolTimeoutError,

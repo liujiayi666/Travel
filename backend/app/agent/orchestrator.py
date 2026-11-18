@@ -1,10 +1,11 @@
 import asyncio
-from dataclasses import replace
 
+from app.agent.errors import AgentMaxStepsReachedError
 from app.agent.tools.registry import ToolRegistry
 from app.core.config import settings
 from app.llm.contracts import (
     LlmAssistantMessage,
+    LlmContextMessage,
     LlmProvider,
     LlmRequest,
     LlmToolCallMessage,
@@ -13,40 +14,39 @@ from app.llm.contracts import (
 from app.llm.errors import LlmProviderError, LlmTimeoutError
 
 
-async def answer_with_one_tool(
+async def run_agent(
     provider: LlmProvider,
     registry: ToolRegistry,
     request: LlmRequest,
+    *,
+    max_steps: int,
 ) -> LlmAssistantMessage:
+    if max_steps < 1:
+        raise ValueError("max_steps must be at least 1")
+    messages: list[LlmContextMessage] = list(request.messages)
+
     try:
         async with asyncio.timeout(settings.agent_run_timeout):
-            first_reponse = await provider.complete(replace(request, tools=registry.definitions))
-
-            if first_reponse.tool_call is None:
-                if first_reponse.message is None:
-                    raise LlmProviderError("Language model returned no usable output")
-                return first_reponse.message
-            tool_call = first_reponse.tool_call
-            tool = registry.get(tool_call.name)
-            tool_result = await tool.execute(tool_call)
-
-            second_response = await provider.complete(
-                LlmRequest(
-                    messages=[
-                        *request.messages,
-                        LlmToolCallMessage(tool_call=tool_call),
-                        LlmToolResultMessage(tool_result=tool_result),
-                    ],
-                    tools=(),
+            for step in range(1, max_steps + 1):
+                response = await provider.complete(
+                    LlmRequest(messages=tuple(messages), tools=registry.definitions)
                 )
-            )
 
-            if second_response.tool_call is not None:
-                # TODO: need loop tool
-                raise LlmProviderError("Language model requested another tool in single-tool mode")
-            if second_response.message is None:
-                raise LlmProviderError("Language model returned no final answer")
+                if response.message is not None:
+                    return response.message
 
-            return second_response.message
+                tool_call = response.tool_call
+                if tool_call is None:
+                    raise LlmProviderError("Language model returned no usable output")
+
+                tool = registry.get(tool_call.name)  # 先确定工具是否合法
+
+                if step == max_steps:  # 再判断步数
+                    raise AgentMaxStepsReachedError(max_steps)
+
+                tool_result = await tool.execute(tool_call)
+                messages.append(LlmToolCallMessage(tool_call=tool_call))
+                messages.append(LlmToolResultMessage(tool_result=tool_result))
+        raise AssertionError("agent loop exited without a terminal state")
     except TimeoutError as exc:
         raise LlmTimeoutError("Agent run timed out") from exc

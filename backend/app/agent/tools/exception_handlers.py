@@ -3,7 +3,7 @@ import logging
 from fastapi import FastAPI, Request, status
 from fastapi.responses import JSONResponse
 
-from app.agent.tools.error import (
+from app.agent.tools.errors import (
     ToolError,
     ToolExecutionError,
     ToolInvalidArgumentsError,

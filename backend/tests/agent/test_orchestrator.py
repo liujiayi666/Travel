@@ -6,7 +6,7 @@ import pytest
 
 from app.agent.contracts import ToolCall, ToolResult
 from app.agent.orchestrator import answer_with_one_tool
-from app.agent.tools.error import ToolNotAllowedError
+from app.agent.tools.errors import ToolNotAllowedError
 from app.agent.tools.registry import ToolRegistry
 from app.agent.tools.travel.weather import WEATHER_DEFINITION
 from app.core.config import settings
