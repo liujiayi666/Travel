@@ -69,11 +69,13 @@ def make_forecast() -> WeatherForecast:
 def make_open_meteo_adapter(
     client: httpx.AsyncClient,
     *,
+    request_timeout: float = 3.0,
     max_attempts: int = 3,
     retry_base_delay: float = 0.001,
 ) -> OpenMeteoWeatherClient:
     return OpenMeteoWeatherClient(
         client,
+        request_timeout=request_timeout,
         max_attempts=max_attempts,
         retry_base_delay=retry_base_delay,
     )
@@ -582,6 +584,31 @@ async def test_open_meteo_maps_repeated_request_timeouts_to_tool_timeout(
 
 
 @pytest.mark.anyio
+async def test_open_meteo_enforces_wall_clock_timeout_per_get() -> None:
+    calls = 0
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        await asyncio.sleep(0.05)
+        return httpx.Response(200, json=GEOCODING_RESPONSE)
+
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(handler),
+    ) as http_client:
+        adapter = make_open_meteo_adapter(
+            http_client,
+            request_timeout=0.001,
+            max_attempts=2,
+            retry_base_delay=0.001,
+        )
+        with pytest.raises(ToolTimeoutError):
+            await adapter.get_daily_forecast(make_query())
+
+    assert calls == 2
+
+
+@pytest.mark.anyio
 async def test_open_meteo_does_not_retry_invalid_json(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -629,6 +656,12 @@ async def test_open_meteo_does_not_retry_invalid_json(
             },
             "agent_run_timeout must be greater",
         ),
+        (
+            {
+                "tool_timeout": 19,
+            },
+            "must cover two sequential weather request budgets",
+        ),
     ],
 )
 def test_settings_validate_timeout_layering(
@@ -637,3 +670,15 @@ def test_settings_validate_timeout_layering(
 ) -> None:
     with pytest.raises(ValidationError, match=expected_message):
         Settings.model_validate(settings_kwargs)
+
+
+def test_default_tool_timeout_covers_two_sequential_retry_paths() -> None:
+    settings = Settings(_env_file=None)
+    retry_wait_seconds = settings.tool_retry_base_delay * (
+        2 ** (settings.tool_max_attempts - 1) - 1
+    )
+    single_phase_budget = (
+        settings.tool_request_timeout * settings.tool_max_attempts + retry_wait_seconds
+    )
+
+    assert settings.tool_timeout >= single_phase_budget * 2

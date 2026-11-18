@@ -113,9 +113,15 @@ class _OpenMeteoForecast(BaseModel):
 
 class OpenMeteoWeatherClient:
     def __init__(
-        self, client: httpx.AsyncClient, *, max_attempts: int, retry_base_delay: float
+        self,
+        client: httpx.AsyncClient,
+        *,
+        request_timeout: float,
+        max_attempts: int,
+        retry_base_delay: float,
     ) -> None:
         self._client = client
+        self._request_timeout = request_timeout
         self._max_attempts = max_attempts
         self._retry_base_delay = retry_base_delay
 
@@ -198,18 +204,19 @@ class OpenMeteoWeatherClient:
     async def _get_json(self, url: str, *, params: dict[str, str | float]) -> dict[str, Any]:
         for attempt in range(1, self._max_attempts + 1):
             try:
-                response = await self._client.get(url, params=params)
-                response.raise_for_status()
+                async with asyncio.timeout(self._request_timeout):
+                    response = await self._client.get(url, params=params)
+                    response.raise_for_status()
 
-                try:
-                    payload = response.json()
-                except ValueError as exc:
-                    raise ToolExecutionError("Weather service returned invalid JSON") from exc
+                    try:
+                        payload = response.json()
+                    except ValueError as exc:
+                        raise ToolExecutionError("Weather service returned invalid JSON") from exc
 
                 if not isinstance(payload, dict):
                     raise ToolExecutionError("Weather service returned invalid JSON")
                 return payload
-            except httpx.TimeoutException as exc:
+            except (TimeoutError, httpx.TimeoutException) as exc:
                 if attempt >= self._max_attempts:
                     raise ToolTimeoutError("Weather service timed out") from exc
             except httpx.HTTPStatusError as exc:
