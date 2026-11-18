@@ -15,10 +15,14 @@ class ToolRuntime:
 
 
 def create_tool_runtime() -> ToolRuntime:
-    client = httpx.AsyncClient(timeout=settings.tool_timeout)
+    client = httpx.AsyncClient(timeout=settings.tool_request_timeout)  # 单次http 请求的超时
     weather_tool = WeatherTool(
-        OpenMeteoWeatherClient(client),
-        timeout=settings.tool_timeout,
+        OpenMeteoWeatherClient(
+            client,
+            max_attempts=settings.tool_max_attempts,
+            retry_base_delay=settings.tool_retry_base_delay,
+        ),
+        timeout=settings.tool_timeout,  # 整体工具执行的超时时间
     )
 
     return ToolRuntime(

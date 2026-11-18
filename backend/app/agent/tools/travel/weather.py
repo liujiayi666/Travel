@@ -10,13 +10,27 @@ from app.agent.tools.error import (
     ToolError,
     ToolExecutionError,
     ToolInvalidArgumentsError,
+    ToolResultError,
     ToolTimeoutError,
+    WeatherDataUnavailableError,
+    WeatherLocationNotFoundError,
 )
 
 MAX_FORECAST_DAYS = 7
 GEOCODING_URL = "https://geocoding-api.open-meteo.com/v1/search"
 FORECAST_URL = "https://api.open-meteo.com/v1/forecast"
 SOURCE_NAME = "open-meteo"
+
+RETRYABLE_STATUS_CODES = frozenset(
+    {
+        408,  # Request Timeout
+        429,  # `Too Many Requests`：请求限流、频率太高
+        500,  # `Internal Server Error`：服务器内部异常（通用兜底，代码异常）
+        502,  # ` Bad Gateway`：网关 / 反向代理拿到无效响应（上游服务挂了
+        503,  # `Service Unavailable`：服务不可用、服务停机、过载
+        504,  # `Gateway Timeout`：网关超时（调用下游接口超时）
+    }
+)
 
 
 class WeatherQuery(BaseModel):
@@ -98,8 +112,12 @@ class _OpenMeteoForecast(BaseModel):
 
 
 class OpenMeteoWeatherClient:
-    def __init__(self, client: httpx.AsyncClient) -> None:
+    def __init__(
+        self, client: httpx.AsyncClient, *, max_attempts: int, retry_base_delay: float
+    ) -> None:
         self._client = client
+        self._max_attempts = max_attempts
+        self._retry_base_delay = retry_base_delay
 
     async def get_daily_forecast(self, query: WeatherQuery) -> WeatherForecast:
         geocoding_payload = await self._get_json(
@@ -116,7 +134,7 @@ class OpenMeteoWeatherClient:
         except ValidationError as exc:
             raise ToolExecutionError("Weather location response is invalid") from exc
         if not geocoding.results:
-            raise ToolExecutionError("Weather location was not found")
+            raise WeatherLocationNotFoundError()
         location = geocoding.results[0]
 
         forecast_payload = await self._get_json(
@@ -135,6 +153,9 @@ class OpenMeteoWeatherClient:
         except ValidationError as exc:
             raise ToolExecutionError("Weather forecast response is invalid") from exc
         daily = forecast.daily
+        if not daily.time:
+            raise WeatherDataUnavailableError()
+
         expected_length = len(daily.time)
         precipitation = daily.precipitation_probability_max
         if precipitation is None:
@@ -175,26 +196,36 @@ class OpenMeteoWeatherClient:
         )
 
     async def _get_json(self, url: str, *, params: dict[str, str | float]) -> dict[str, Any]:
-        try:
-            response = await self._client.get(url, params=params)
-            response.raise_for_status()
-        except httpx.TimeoutException as exc:
-            raise ToolTimeoutError("Weather service timed out") from exc
-        except httpx.HTTPStatusError as exc:
-            raise ToolExecutionError(
-                f"Weather service returned HTTP {exc.response.status_code}"
-            ) from exc
-        except httpx.RequestError as exc:
-            raise ToolExecutionError(
-                f"Weather service request failed ({type(exc).__name__})"
-            ) from exc
-        except httpx.HTTPError as exc:
-            raise ToolExecutionError("Weather service request failed") from exc
+        for attempt in range(1, self._max_attempts + 1):
+            try:
+                response = await self._client.get(url, params=params)
+                response.raise_for_status()
 
-        payload = response.json()
-        if not isinstance(payload, dict):
-            raise ToolExecutionError("Weather service returned invalid JSON")
-        return payload
+                try:
+                    payload = response.json()
+                except ValueError as exc:
+                    raise ToolExecutionError("Weather service returned invalid JSON") from exc
+
+                if not isinstance(payload, dict):
+                    raise ToolExecutionError("Weather service returned invalid JSON")
+                return payload
+            except httpx.TimeoutException as exc:
+                if attempt >= self._max_attempts:
+                    raise ToolTimeoutError("Weather service timed out") from exc
+            except httpx.HTTPStatusError as exc:
+                status_code = exc.response.status_code
+                if status_code not in RETRYABLE_STATUS_CODES or attempt >= self._max_attempts:
+                    raise ToolExecutionError(
+                        f"Weather service returned HTTP {exc.response.status_code}"
+                    ) from exc
+            except httpx.RequestError as exc:
+                if attempt >= self._max_attempts:
+                    raise ToolExecutionError(
+                        f"Weather service request failed ({type(exc).__name__})"
+                    ) from exc
+            delay = self._retry_base_delay * (2 ** (attempt - 1))
+            await asyncio.sleep(delay)
+        raise AssertionError("Unreachable retry state")
 
 
 WEATHER_DEFINITION = ToolDefinition(
@@ -233,6 +264,13 @@ class WeatherTool:
                 forecast = await self._client.get_daily_forecast(query)
         except TimeoutError as exc:
             raise ToolTimeoutError("Weather tool timed out") from exc
+        except ToolResultError as exc:
+            return ToolResult(
+                call_id=call.id,
+                name=self.definition.name,
+                status="error",
+                error_code=exc.code,
+            )
         except ToolError:
             raise
         except Exception as exc:

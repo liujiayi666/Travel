@@ -1,3 +1,17 @@
+class ToolResultError(Exception):
+    """Expected domain outcome that should become a status=error ToolResult."""
+
+    code = "tool_result_error"
+
+
+class WeatherLocationNotFoundError(ToolResultError):
+    code = "weather_location_not_found"
+
+
+class WeatherDataUnavailableError(ToolResultError):
+    code = "weather_data_unavailable"
+
+
 class ToolError(Exception):
     """Base class for tool-boundary failures."""
 
