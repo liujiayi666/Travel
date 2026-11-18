@@ -14,6 +14,7 @@ from app.agent.tools.error import (
     WeatherLocationNotFoundError,
 )
 from app.agent.tools.travel.weather import (
+    MAX_FORECAST_DAYS,
     OpenMeteoWeatherClient,
     WeatherDay,
     WeatherForecast,
@@ -167,6 +168,54 @@ def test_weather_query_normalizes_destination_and_accepts_seven_days() -> None:
 def test_weather_query_rejects_invalid_arguments(arguments: dict[str, object]) -> None:
     with pytest.raises(ValidationError):
         WeatherQuery.model_validate(arguments)
+
+
+def test_weather_location_rejects_oversized_or_out_of_range_fields() -> None:
+    with pytest.raises(ValidationError):
+        WeatherLocation(
+            name="x" * 121,
+            country="China",
+            latitude=30.29,
+            longitude=120.16,
+            timezone="Asia/Shanghai",
+        )
+
+    with pytest.raises(ValidationError):
+        WeatherLocation(
+            name="Hangzhou",
+            country="China",
+            latitude=91,
+            longitude=120.16,
+            timezone="Asia/Shanghai",
+        )
+
+
+def test_weather_day_rejects_out_of_range_values() -> None:
+    with pytest.raises(ValidationError):
+        WeatherDay(
+            date=date(2026, 11, 20),
+            temperature_min_c=-101,
+            temperature_max_c=19.4,
+            precipitation_probability_max=20,
+        )
+
+    with pytest.raises(ValidationError):
+        WeatherDay(
+            date=date(2026, 11, 20),
+            temperature_min_c=12.1,
+            temperature_max_c=19.4,
+            precipitation_probability_max=101,
+        )
+
+
+def test_weather_forecast_rejects_more_than_supported_days() -> None:
+    day = make_forecast().days[0]
+
+    with pytest.raises(ValidationError):
+        WeatherForecast(
+            location=make_forecast().location,
+            days=[day] * (MAX_FORECAST_DAYS + 1),
+        )
 
 
 @pytest.mark.anyio
@@ -362,6 +411,37 @@ async def test_open_meteo_maps_empty_geocoding_result_to_domain_error() -> None:
         adapter = make_open_meteo_adapter(http_client)
         with pytest.raises(WeatherLocationNotFoundError):
             await adapter.get_daily_forecast(make_query("Unknown City"))
+
+    assert len(requests) == 1
+
+
+@pytest.mark.anyio
+async def test_open_meteo_rejects_oversized_location_text_before_forecast() -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(
+            200,
+            json={
+                "results": [
+                    {
+                        "name": "x" * 121,
+                        "country": "China",
+                        "latitude": 30.29,
+                        "longitude": 120.16,
+                        "timezone": "Asia/Shanghai",
+                    }
+                ]
+            },
+        )
+
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(handler),
+    ) as http_client:
+        adapter = make_open_meteo_adapter(http_client)
+        with pytest.raises(ToolExecutionError, match="location response is invalid"):
+            await adapter.get_daily_forecast(make_query())
 
     assert len(requests) == 1
 
@@ -673,7 +753,7 @@ def test_settings_validate_timeout_layering(
 
 
 def test_default_tool_timeout_covers_two_sequential_retry_paths() -> None:
-    settings = Settings(_env_file=None)
+    settings = Settings.model_validate({})
     retry_wait_seconds = settings.tool_retry_base_delay * (
         2 ** (settings.tool_max_attempts - 1) - 1
     )
