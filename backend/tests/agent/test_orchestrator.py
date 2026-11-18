@@ -65,6 +65,22 @@ class FakeTool:
         )
 
 
+class ErrorResultTool:
+    definition = WEATHER_DEFINITION
+
+    def __init__(self) -> None:
+        self.calls: list[ToolCall] = []
+
+    async def execute(self, call: ToolCall) -> ToolResult:
+        self.calls.append(call)
+        return ToolResult(
+            call_id=call.id,
+            name=call.name,
+            status="error",
+            error_code="weather_location_not_found",
+        )
+
+
 class SlowProvider(SequenceProvider):
     async def complete(self, request: LlmRequest) -> LlmResponse:
         await asyncio.sleep(0.05)
@@ -140,6 +156,40 @@ async def test_tool_response_executes_once_and_requests_final_answer() -> None:
     assert isinstance(follow_up.messages[-1], LlmToolResultMessage)
     assert follow_up.messages[-2].tool_call == call
     assert follow_up.messages[-1].tool_result.call_id == call.id
+
+
+@pytest.mark.anyio
+async def test_error_tool_result_is_passed_to_second_llm_call() -> None:
+    call = make_call()
+    reply_text = "无法确认该地点的天气，请检查城市名称或补充国家。"
+    provider = SequenceProvider(
+        [
+            LlmResponse(tool_call=call),
+            LlmResponse(
+                message=LlmAssistantMessage(
+                    content=reply_text,
+                ),
+            ),
+        ]
+    )
+    tool = ErrorResultTool()
+
+    reply = await answer_with_one_tool(
+        provider,
+        ToolRegistry([tool]),
+        make_request(),
+    )
+
+    assert reply.content == reply_text
+    assert len(provider.requests) == 2
+    assert tool.calls == [call]
+
+    follow_up = provider.requests[1]
+    assert follow_up.tools == ()
+    tool_result_message = follow_up.messages[-1]
+    assert isinstance(tool_result_message, LlmToolResultMessage)
+    assert tool_result_message.tool_result.status == "error"
+    assert tool_result_message.tool_result.error_code == "weather_location_not_found"
 
 
 @pytest.mark.anyio

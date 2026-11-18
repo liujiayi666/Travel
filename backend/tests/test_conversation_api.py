@@ -45,6 +45,7 @@ FIRST_MESSAGE = "杭州玩两天怎么安排？"
 FIRST_REPLY = "可以第一天游西湖，第二天去灵隐寺。"
 FOLLOW_UP_CONTENT = "第二天呢？"
 WEATHER_FINAL_REPLY = "杭州当天最高约 19°C，降雨概率 20%。"
+DEGRADED_WEATHER_REPLY = "无法确认该地点的天气，请检查城市名称或补充国家/地区。"
 WEATHER_DEFINITION = ToolDefinition(
     name="get_weather",
     description="Get weather",
@@ -174,6 +175,22 @@ class FakeWeatherTool:
         )
 
 
+class DegradedWeatherTool:
+    definition = WEATHER_DEFINITION
+
+    def __init__(self) -> None:
+        self.calls: list[ToolCall] = []
+
+    async def execute(self, call: ToolCall) -> ToolResult:
+        self.calls.append(call)
+        return ToolResult(
+            call_id=call.id,
+            name=call.name,
+            status="error",
+            error_code="weather_location_not_found",
+        )
+
+
 class FailingTool:
     definition = WEATHER_DEFINITION
 
@@ -211,6 +228,26 @@ class WeatherConversationProvider:
     async def stream(self, request: LlmRequest) -> AsyncGenerator[LlmTextDelta, None]:
         raise AssertionError("Weather tool test must use complete()")
         yield LlmTextDelta(text="unreachable")
+
+
+class DegradedWeatherProvider(WeatherConversationProvider):
+    async def complete(self, request: LlmRequest) -> LlmResponse:
+        self.requests.append(request)
+        if len(self.requests) == 1:
+            return LlmResponse(
+                tool_call=ToolCall(
+                    id="call_weather_1",
+                    name="get_weather",
+                    arguments={
+                        "destination": "Unknown City",
+                        "start_date": "2026-11-20",
+                        "end_date": "2026-11-20",
+                    },
+                )
+            )
+        return LlmResponse(
+            message=LlmAssistantMessage(content=DEGRADED_WEATHER_REPLY),
+        )
 
 
 class FakeStreamingConversationProvider:
@@ -877,6 +914,59 @@ async def test_send_message_executes_weather_tool_and_persists_final_exchange(
         ("user", "杭州 11 月 20 日天气怎么样？"),
         ("assistant", WEATHER_FINAL_REPLY),
     ]
+
+
+@pytest.mark.anyio
+async def test_recoverable_tool_error_returns_degraded_answer_and_persists_exchange(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    user_id = await persist_user(session_factory, "Degraded weather")
+    provider = DegradedWeatherProvider()
+    weather_tool = DegradedWeatherTool()
+
+    async with session_factory() as session:
+        conversation = Conversation(user_id=user_id, title="Unknown city")
+        session.add(conversation)
+        await session.commit()
+        conversation_id = conversation.id
+
+    async with make_client(
+        session_factory,
+        user_id=user_id,
+        provider=provider,
+        tool_registry=ToolRegistry([weather_tool]),
+    ) as client:
+        response = await client.post(
+            f"/api/conversations/{conversation_id}/messages",
+            json={"content": "Unknown City 11 月 20 日天气怎么样？"},
+            headers={"Origin": settings.frontend_origin},
+        )
+        history_response = await client.get(
+            f"/api/conversations/{conversation_id}/messages",
+        )
+
+    assert response.status_code == 200
+    assert response.json()["message"]["content"] == DEGRADED_WEATHER_REPLY
+    assert len(provider.requests) == 2
+    assert len(weather_tool.calls) == 1
+
+    tool_result_message = provider.requests[1].messages[-1]
+    assert isinstance(tool_result_message, LlmToolResultMessage)
+    assert tool_result_message.tool_result.status == "error"
+    assert tool_result_message.tool_result.error_code == "weather_location_not_found"
+    assert [(message["role"], message["content"]) for message in history_response.json()] == [
+        ("user", "Unknown City 11 月 20 日天气怎么样？"),
+        ("assistant", DEGRADED_WEATHER_REPLY),
+    ]
+
+    async with session_factory() as session:
+        conversation = await session.scalar(
+            select(Conversation).where(Conversation.id == conversation_id)
+        )
+
+    assert conversation is not None
+    assert conversation.processing_token is None
+    assert conversation.processing_expires_at is None
 
 
 @pytest.mark.anyio
