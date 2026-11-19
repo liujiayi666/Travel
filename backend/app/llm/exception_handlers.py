@@ -13,7 +13,7 @@ from app.llm.errors import (
 logger = logging.getLogger(__name__)
 
 
-def install_chat_error_handlers(app: FastAPI) -> None:
+def install_llm_error_handlers(app: FastAPI) -> None:
     @app.exception_handler(LlmInvalidRequestError)
     async def llm_invalid_request_error_handler(
         request: Request,

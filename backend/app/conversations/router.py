@@ -12,14 +12,14 @@ from app.agent.tools.dependencies import get_tool_registry
 from app.agent.tools.registry import ToolRegistry
 from app.auth.dependencies import get_current_user, require_trusted_origin
 from app.auth.models import User
-from app.chat.presenter import to_chat_response
-from app.chat.schemas import ChatResponse
 from app.conversations.errors import ConversationBusyError
+from app.conversations.presenter import to_send_message_response
 from app.conversations.schemas import (
     ConversationCreateRequest,
     ConversationResponse,
     MessageResponse,
     SendMessageRequest,
+    SendMessageResponse,
 )
 from app.conversations.service import (
     MessageExchangeCompleted,
@@ -99,7 +99,7 @@ async def create_new_conversation(
 
 @router.post(
     "/{conversation_id}/messages",
-    response_model=ChatResponse,
+    response_model=SendMessageResponse,
     status_code=status.HTTP_200_OK,
     dependencies=[Depends(require_trusted_origin)],
 )
@@ -119,7 +119,7 @@ async def send_conversation_message(
         content=payload.content,
         tool_registry=tool_registry,
     )
-    return to_chat_response(reply)
+    return to_send_message_response(reply)
 
 
 @router.post(

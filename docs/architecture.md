@@ -415,7 +415,6 @@ DELETE /api/trips/{tripId}
 ### 10.3 对话与 AI
 
 ```text
-POST /api/chat                         A6 单轮；A7 迁移到 Conversation API
 POST /api/conversations                A7 创建 Conversation，只返回 ConversationResource
 GET  /api/conversations                A7 读取当前用户的 Conversation 列表
 GET  /api/conversations/{id}/messages  A7 分页读取历史
@@ -426,7 +425,7 @@ POST /api/trips/{tripId}/runs/stream    SSE 流式生成
 POST /api/runs/{runId}/cancel
 ```
 
-A6 先打通“已认证用户输入一条消息 → Provider → 返回完整答案”，不保存 Message。A7 建立服务端权威的 Conversation / Message：前端只拉取历史用于展示，并在发送时提交当前 `content`；后端完成所有权检查、读取有限历史、上下文预算、system prompt 拼装和消息持久化。发送接口只返回本轮新增的 assistant 回复；客户端不能提交完整 history 或 system 消息，避免伪造 assistant 内容、绕过预算或跨用户读取。
+A6 的临时 `POST /api/chat` 已由 Conversation API 取代并从应用中移除。当前唯一聊天写入入口是 `POST /api/conversations/{id}/messages` 及其 SSE 版本。A7 建立服务端权威的 Conversation / Message：前端只拉取历史用于展示，并在发送时提交当前 `content`；后端完成所有权检查、读取有限历史、上下文预算、system prompt 拼装和消息持久化。发送接口只返回本轮新增的 assistant 回复；客户端不能提交完整 history 或 system 消息，避免伪造 assistant 内容、绕过预算或跨用户读取。
 
 `POST /api/conversations` 只负责创建 ConversationResource，不调用 Provider，也不保存 Message。请求必须携带首条 `message`，服务端只把它规范化并截取前 50 字符作为初始 title，不把该字段写成 Message；接口返回 `201 + ConversationResponse`。
 
@@ -596,7 +595,7 @@ outputTokens
 
 ### Phase 2：最小文本聊天
 
-- 已认证用户通过 `POST /api/chat` 输入一条消息，获得非流式完整答案。
+- A6 曾通过临时 `POST /api/chat` 获得非流式答案；该入口已移除，当前所有聊天写入统一使用 Conversation API。
 - 浏览器展示一次真实一问一答；刷新后暂不要求恢复历史。
 - Route 只负责 HTTP；Chat Service 通过 Provider 接口调用模型。
 - 使用 fake provider 验证成功、超时和上游失败；密钥只存在于后端 `.env`。

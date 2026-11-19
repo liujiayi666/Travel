@@ -443,6 +443,22 @@ async def test_conversation_api_requires_authentication(
 
 
 @pytest.mark.anyio
+async def test_legacy_chat_route_is_removed(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    user_id = await persist_user(session_factory, "Legacy route removal")
+
+    async with make_client(session_factory, user_id=user_id) as client:
+        response = await client.post(
+            "/api/chat",
+            json={"message": FIRST_MESSAGE},
+            headers={"Origin": settings.frontend_origin},
+        )
+
+    assert response.status_code == 404
+
+
+@pytest.mark.anyio
 async def test_list_conversations_returns_only_current_user_sorted_by_update(
     session_factory: async_sessionmaker[AsyncSession],
 ) -> None:
