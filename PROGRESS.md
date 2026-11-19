@@ -51,6 +51,7 @@
 | 23 | 2026-11-18 | 完成 A9.2 验收：ToolError HTTP 映射、只读 retry、wall-clock 超时和可恢复 ToolResult；PR #28 合并为 `ecef431` |
 | 24 | 2026-11-18 | 完成 A9.3 验收：Prompt Injection 信任边界、外部字段约束、provenance 与 grounded smoke；PR #29 合并为 `b717cf2` |
 | 25 | 2026-11-18 | 完成 A10.1 验收：受控多步 Agent loop、allowlist 与 max_steps 终止顺序、稳定超限映射和取消/lease 边界；commit `038d9a9` |
+| 26 | 2026-11-19 | 完成 A10.2 验收：Provider usage 归一化、累计 token 预算、成本估算、超限前置终止与稳定错误映射；commit `a3ddfd4` |
 
 ## 易错本
 
@@ -125,6 +126,10 @@
 - 最后一个工具提议仍必须先过 Registry allowlist：未知工具应稳定返回 ToolNotAllowed，不能被步数上限错误覆盖
 - Agent 错误与 Tool 错误要放在各自单一模块；同名异常定义在两个模块会产生不同继承体系，HTTP handler 捕获不到另一份类型
 - `CancelledError` 不会被 `except TimeoutError` 捕获，会穿过 `run_agent()`；`send_message()` 的 shield `finally` 负责清理 lease，且因未到 persist 步骤不会写入半轮 Message
+- 非流式 Provider 响应必须带可验证 usage；缺少 usage 时 fail closed，不能把未知成本伪装成 0，也不能用字符数替代供应商 tokenizer
+- Agent 多步 input token 会因每轮重复发送历史而重复计费，必须累计所有模型调用；只检查最后一次 usage 会低估成本并绕过预算
+- Token 预算必须在收到响应后、执行该响应提议的工具前检查；否则已超限的 Run 仍可能产生额外成本和不可撤销副作用
+- 成本价格必须 input/output 成对配置；无法配置时记录 `None`。当前响应可能让 Run 有一次由 `max_tokens` 限制的有界超额，不能宣称本地字符估算可精确预检 token
 - Prompt 不是权限边界；即使模型被工具文本诱导，服务端仍靠工具 allowlist、`tools=()` 和当前 Session 身份限制可执行动作
 - Schema 只约束结构和类型，并丢弃未声明字段，不能“净化”允许字段中的恶意自然语言；ToolResult 必须保持低信任 `tool` role
 - “地点找不到/无预报”是预期领域结果，应转 `ToolResult(status="error")` 并由第二次 LLM 安全降级；工具/Provider 故障才走 502/504 且不落库
@@ -475,15 +480,25 @@
 - 学到：服务端掌握继续与终止权；Provider 超时映射为 `LlmTimeoutError`，取消保持 `CancelledError` 并穿过 Orchestrator，Conversation 只保存完整成功的 exchange。
 - 面试向：我把固定单工具流程升级为有界 Agent 状态机，以 LLM 决策次数限制循环、逐步携带 ToolCall/ToolResult、在最后一步阻止合法工具产生无法收尾的副作用，并用结构化测试区分 allowlist、步数、deadline 与取消边界。
 
-#### A10.2 Run 预算、取消与错误边界
+#### A10.2 Run 预算、取消与错误边界 — ✓ 2026-11-19（commit `a3ddfd4`）
 
 - 训练能力：区分单次 Provider timeout、单次 Tool timeout 和整个 AgentRun deadline；在循环中持续计算 token/成本，而不是只看最后一次调用。
 - 方案：每次模型调用继续受 `llm_timeout` 约束，整个循环共享 `agent_run_timeout`；Provider 归一化 usage，Orchestrator 累计 input/output token；达到 token 限额后不再发起下一次模型调用；成本由服务端配置的价格计算或明确记录为不可计算。
+- usage 语义：非流式 Provider 响应必须包含归一化 `LlmUsage`；缺失或非法 usage 作为 Provider 契约错误终止。Run 总 token 按每次调用累加，input token 会因循环重复携带历史而重复计费，不能只统计最后一条请求。
+- 检查时机：每次 Provider 返回后先累计 usage，再检查 Run 预算；超限时不执行该响应提议的工具、不返回最终回答、不持久化 exchange。当前响应最多造成一次由服务端 `max_tokens` 限定的有界超额，暂不做易漂移的本地 tokenizer 预估。
+- 成本语义：input/output 每百万 token 价格分别由服务端配置，必须同时提供或同时留空；无法配置价格时记录 `estimated_cost_usd=None`，不能把未知成本伪装成 0。
 - 终止语义：预算耗尽、总 deadline 到期、用户取消、Provider 失败和技术型工具失败分别形成稳定原因；任何终止路径都必须停止后续循环并释放 Conversation lease。
 - 可运行 happy path：一次工具调用后的最终回答记录两轮 usage、总耗时和完成状态，且未超过预算。
 - 可运行 failure path：第二轮工具结果使累计 token 超限后不再进行第三轮 Provider 调用；阻塞 Provider 触发总 deadline；取消运行不会继续执行工具，也不会保存部分 exchange。
 - 可观察证据：确定性的 fake usage/clock 测试断言 Provider 调用次数、累计 usage、终态和错误映射；本步先验证非流式 Agent 路径，工具事件 SSE 仍按独立切片演进。
 - 明确不做：自动重试整条 AgentRun、按用户计费、复杂价格表和生产级限流。
+
+- 验收通过：用户执行完整 backend pytest 与 Ruff 通过；提交钩子中后端 70 files format/lint、前端 20 files / 86 tests 和 production build 全部通过。
+- 可复查测试：`test_agent_loop_stops_before_tool_when_token_budget_is_exceeded`、`test_agent_loop_does_not_return_final_answer_that_exceeds_token_budget`、`test_agent_loop_returns_estimated_cost_from_cumulative_usage`、`test_agent_token_budget_returns_stable_error_without_partial_persistence`、`test_provider_rejects_missing_usage`、`test_provider_rejects_invalid_usage`、`test_llm_usage_totals_tokens_and_rejects_negative_values`、`test_settings_require_complete_llm_pricing_pair`。
+- 关键代码：`backend/app/llm/contracts.py` 的 `LlmUsage`/`LlmPricing`、`backend/app/llm/openai_compatible_provider.py` 的 usage 归一化、`backend/app/agent/orchestrator.py` 的累计预算检查和 `AgentRunResult`、`backend/app/conversations/service.py` 的预算/价格接线。
+- 学到：usage 必须由 Provider 边界归一化，业务层不消费供应商原始 usage 字段；缺失或非法 usage 是稳定的 Provider 契约失败。
+- 学到：预算检查顺序是“累计 usage → 判断预算 → 工具/最终回答”。超限后当前 ToolCall 不执行、Run 不返回、Message 不持久化，但 lease 仍由 Service `finally` 释放。
+- 面试向：我把真实供应商 usage 转成应用 DTO，按每轮实际计费累计整个 AgentRun 的 input/output token，在执行工具前关停超预算运行，并用可选服务端价格计算成本；未知 usage fail closed，未知价格保持 `None`，避免用字符估算或 0 成本制造虚假的预算安全感。
 
 #### A10.3 AgentRun / ToolCall Trace 与成本可见性
 
@@ -538,7 +553,7 @@
 
 ## 下一步
 
-下一步进入 A10.2：在已完成的有界 loop 上接入 Provider usage、Run 级 token/成本预算和稳定错误映射，继续验证总 deadline、取消与失败都不会留下永久 running 状态。
+下一步进入 A10.3：建立 AgentRun / ToolCall 持久化 trace，把已完成运行的终态、耗时、steps、token、成本和稳定失败原因与 Conversation fencing 语义连接起来。
 
 后续顺序：
 
@@ -554,7 +569,7 @@
 10. A9.1：ToolCall / ToolResult 契约与天气 happy path — ✓
 11. A9.2：非法参数与工具故障 — ✓
 12. A9.3：Prompt Injection 与 groundedness — ✓
-13. A10：Agent Loop、限额、Trace 与 Eval — 进行中（A10.1 ✓）
+13. A10：Agent Loop、限额、Trace 与 Eval — 进行中（A10.1、A10.2 ✓）
 14. A7.4.1：Runtime 一致性收尾 — 暂缓
 15. A11：RAG 知识检索工具
 16. A12：Conversation 历史治理与高级压缩

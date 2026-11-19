@@ -305,6 +305,19 @@
       </ul>
       <blockquote>用服务端有界状态机限制模型决策次数，并把 allowlist、步数上限、deadline、取消和 lease 清理放在各自正确边界；循环能力增长时不牺牲终止确定性与无半轮持久化。</blockquote>
     </article>
+    <article class="cp">
+      <header><span class="id">a3ddfd4</span><time>2026-11-19</time><h2>A10.2 Usage、Token 预算与成本</h2></header>
+      <ul>
+        <li>非流式 Provider 将供应商 <code>prompt_tokens</code>/<code>completion_tokens</code> 归一化为应用自己的 <code>LlmUsage</code>；缺失或非法 usage 直接作为 Provider 契约错误终止</li>
+        <li>AgentLoop 按每一轮调用累计 input/output token；历史会在每轮重复发送，因此不能只统计最后一次请求的 prompt token</li>
+        <li>预算检查顺序固定为“累计 usage → 判断 Run 预算 → 执行工具或返回最终回答”；超限响应的 ToolCall 不执行，避免额外成本和无法收尾的副作用</li>
+        <li>成本按服务端配置的每百万 input/output token 价格计算；价格必须成对配置，未知价格记录为 <code>None</code> 而不是 0</li>
+        <li>超限抛出 <code>AgentTokenBudgetExceededError</code>，API 稳定映射为 <code>agent_token_budget_exceeded</code>；Conversation Service 不进入持久化，仍通过 shield <code>finally</code> 释放 lease</li>
+        <li>测试覆盖重复 input 累计、工具前超限、最终回答超限、成本计算、缺失/非法 usage、价格成对校验，以及 API 超限后无半轮 Message</li>
+        <li>证据：完整 backend pytest 与 Ruff 通过；提交钩子中后端 format/lint、前端 20 files / 86 tests 和 production build 全部通过</li>
+      </ul>
+      <blockquote>把供应商 usage 归一化后在服务端累计整个 Run 的 token，并在任何工具或最终结果被采用前执行预算判断；未知 usage fail closed、未知价格保持 None，才能让金额边界真实而不是表面上有上限。</blockquote>
+    </article>
   </div>
 </div>
 </body>

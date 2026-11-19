@@ -341,6 +341,21 @@ LlmProvider                         ToolRegistry
 
 A10 分四个学习切片：A10.1 受控循环与终止状态；A10.2 deadline、usage 与成本预算；A10.3 AgentRun/ToolCall trace；A10.4 固定 eval。工具事件 SSE 不在这些前置切片中伪装成已完成能力，后续单独接入。
 
+### 8.3 A10.2 Usage 与 Run 预算
+
+非流式 LLM 调用在 Provider 边界把供应商 usage 归一化为应用自己的 input/output token。单次调用 timeout、单次 Tool timeout 和整个 AgentRun deadline 保持分层，不能用一个“超时”字段混掉。
+
+Run token 预算遵循以下顺序：
+
+```text
+Provider 返回 response + usage
+→ 累计本轮 input/output token
+→ 检查 Run 总预算
+→ 未超限才允许执行该响应提议的工具或返回最终回答
+```
+
+因此一次响应最多会让总量超出预算一个由 `max_tokens` 限定的有界额度；这比维护一个与真实供应商不一致的本地 tokenizer 更诚实。超限后不再调用 Provider，也不执行当前响应提议的工具。Token、耗时、成本和最终失败原因是运行观测数据，A10.2 先在 Orchestrator 结果/异常中暴露，A10.3 再持久化。
+
 ## 9. 核心数据模型
 
 ```text
