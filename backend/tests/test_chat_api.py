@@ -15,6 +15,7 @@ from app.llm.contracts import (
     LlmRequest,
     LlmResponse,
     LlmTextDelta,
+    LlmUsage,
 )
 from app.llm.errors import (
     LlmInvalidRequestError,
@@ -23,6 +24,8 @@ from app.llm.errors import (
     LlmTimeoutError,
 )
 from app.main import create_app
+
+TEST_USAGE = LlmUsage(input_tokens=10, output_tokens=5)
 
 
 def make_payload(message: str = "杭州周末去哪玩？") -> dict:
@@ -75,7 +78,10 @@ def post_chat(
 
 def test_chat_requires_authentication() -> None:
     provider = FakeProvider(
-        response=LlmResponse(message=LlmAssistantMessage(role="assistant", content="unused"))
+        response=LlmResponse(
+            message=LlmAssistantMessage(role="assistant", content="unused"),
+            usage=TEST_USAGE,
+        )
     )
     client, _ = make_client(provider, authenticated=False)
 
@@ -87,7 +93,10 @@ def test_chat_requires_authentication() -> None:
 
 def test_chat_returns_only_the_assistant_message() -> None:
     provider = FakeProvider(
-        response=LlmResponse(message=LlmAssistantMessage(role="assistant", content="去西湖。"))
+        response=LlmResponse(
+            message=LlmAssistantMessage(role="assistant", content="去西湖。"),
+            usage=TEST_USAGE,
+        )
     )
     client, _ = make_client(provider)
 
@@ -133,7 +142,10 @@ def test_presenter_maps_only_public_message_fields() -> None:
 )
 def test_chat_rejects_invalid_message(payload: dict) -> None:
     provider = FakeProvider(
-        response=LlmResponse(message=LlmAssistantMessage(role="assistant", content="unused"))
+        response=LlmResponse(
+            message=LlmAssistantMessage(role="assistant", content="unused"),
+            usage=TEST_USAGE,
+        )
     )
     client, _ = make_client(provider)
 
@@ -145,7 +157,10 @@ def test_chat_rejects_invalid_message(payload: dict) -> None:
 
 def test_chat_rejects_client_supplied_user_or_model_fields() -> None:
     provider = FakeProvider(
-        response=LlmResponse(message=LlmAssistantMessage(role="assistant", content="unused"))
+        response=LlmResponse(
+            message=LlmAssistantMessage(role="assistant", content="unused"),
+            usage=TEST_USAGE,
+        )
     )
     client, _ = make_client(provider)
 
@@ -164,7 +179,10 @@ def test_chat_rejects_client_supplied_user_or_model_fields() -> None:
 
 def test_chat_rejects_missing_untrusted_origin() -> None:
     provider = FakeProvider(
-        response=LlmResponse(message=LlmAssistantMessage(role="assistant", content="unused"))
+        response=LlmResponse(
+            message=LlmAssistantMessage(role="assistant", content="unused"),
+            usage=TEST_USAGE,
+        )
     )
     client, _ = make_client(provider)
 

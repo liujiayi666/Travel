@@ -3,12 +3,15 @@ from types import SimpleNamespace
 from fastapi.testclient import TestClient
 
 import app.main as main_module
-from app.llm.contracts import LlmAssistantMessage, LlmRequest, LlmResponse
+from app.llm.contracts import LlmAssistantMessage, LlmRequest, LlmResponse, LlmUsage
 
 
 class FakeProvider:
     async def complete(self, request: LlmRequest) -> LlmResponse:
-        return LlmResponse(message=LlmAssistantMessage(role="assistant", content="ok"))
+        return LlmResponse(
+            message=LlmAssistantMessage(role="assistant", content="ok"),
+            usage=LlmUsage(input_tokens=1, output_tokens=1),
+        )
 
 
 class FakeClient:

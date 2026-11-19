@@ -1,3 +1,4 @@
+from decimal import Decimal
 from typing import Literal, Self
 
 from pydantic import Field, SecretStr, model_validator
@@ -46,6 +47,11 @@ class Settings(BaseSettings):
     agent_run_timeout: float = Field(default=60.0, gt=0)
     agent_max_steps: int = Field(default=5, ge=1, le=10)
 
+    agent_max_total_tokens: int = Field(default=30_000, gt=0)
+
+    llm_input_cost_per_million_usd: Decimal | None = Field(default=None, ge=0)
+    llm_output_cost_per_million_usd: Decimal | None = Field(default=None, ge=0)
+
     @model_validator(mode="after")
     def validate_conversation_lease(self) -> Self:
         maximum_run_seconds = max(
@@ -82,6 +88,17 @@ class Settings(BaseSettings):
         )
         if self.conversation_lease_seconds <= maximum_run_seconds:
             raise ValueError("conversation_lease_seconds must exceed all run timeouts")
+        return self
+
+    @model_validator(mode="after")
+    def validate_llm_pricing(self) -> Self:
+        if (self.llm_input_cost_per_million_usd is None) != (
+            self.llm_output_cost_per_million_usd is None
+        ):
+            raise ValueError(
+                "llm_input_cost_per_million_usd and "
+                "llm_output_cost_per_million_usd must be configured together"
+            )
         return self
 
 

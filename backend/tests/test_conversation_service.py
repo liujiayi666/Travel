@@ -2,6 +2,7 @@ import asyncio
 import uuid
 from collections.abc import AsyncGenerator, AsyncIterator
 from datetime import UTC, datetime, timedelta
+from decimal import Decimal
 from typing import cast
 from unittest.mock import AsyncMock
 
@@ -29,8 +30,17 @@ from app.conversations.service import (
     stream_message,
 )
 from app.core.config import Settings, settings
-from app.llm.contracts import LlmAssistantMessage, LlmMessage, LlmRequest, LlmResponse, LlmTextDelta
+from app.llm.contracts import (
+    LlmAssistantMessage,
+    LlmMessage,
+    LlmRequest,
+    LlmResponse,
+    LlmTextDelta,
+    LlmUsage,
+)
 from app.llm.errors import LlmProviderError, LlmTimeoutError
+
+TEST_SERVICE_USAGE = LlmUsage(input_tokens=10, output_tokens=5)
 
 
 @pytest.fixture
@@ -107,7 +117,24 @@ def test_settings_reject_non_positive_context_limits() -> None:
     with pytest.raises(ValidationError):
         Settings(chat_context_max_chars=0)
     with pytest.raises(ValidationError):
+        Settings(agent_max_total_tokens=0)
+    with pytest.raises(ValidationError):
         Settings(llm_timeout=30, conversation_lease_seconds=30)
+
+
+def test_settings_require_complete_llm_pricing_pair() -> None:
+    with pytest.raises(ValidationError, match="must be configured together"):
+        Settings(llm_input_cost_per_million_usd=Decimal(1))
+    with pytest.raises(ValidationError, match="must be configured together"):
+        Settings(llm_output_cost_per_million_usd=Decimal(2))
+
+    configured = Settings(
+        llm_input_cost_per_million_usd=Decimal(1),
+        llm_output_cost_per_million_usd=Decimal(2),
+    )
+
+    assert configured.llm_input_cost_per_million_usd == Decimal(1)
+    assert configured.llm_output_cost_per_million_usd == Decimal(2)
 
 
 @pytest.mark.anyio
@@ -127,7 +154,10 @@ async def test_send_message_releases_read_transaction_before_provider_call(
         class TransactionProbeProvider:
             async def complete(self, request: LlmRequest) -> LlmResponse:
                 transaction_states.append(session.in_transaction())
-                return LlmResponse(message=LlmAssistantMessage(content="reply"))
+                return LlmResponse(
+                    message=LlmAssistantMessage(content="reply"),
+                    usage=TEST_SERVICE_USAGE,
+                )
 
             async def stream(self, request: LlmRequest) -> AsyncGenerator[LlmTextDelta, None]:
                 transaction_states.append(session.in_transaction())
@@ -215,7 +245,10 @@ async def test_persistence_failure_releases_conversation_lease(
 ) -> None:
     class SuccessfulProvider:
         async def complete(self, request: LlmRequest) -> LlmResponse:
-            return LlmResponse(message=LlmAssistantMessage(content="reply"))
+            return LlmResponse(
+                message=LlmAssistantMessage(content="reply"),
+                usage=TEST_SERVICE_USAGE,
+            )
 
         async def stream(self, request: LlmRequest) -> AsyncGenerator[LlmTextDelta, None]:
             yield LlmTextDelta(text="reply")

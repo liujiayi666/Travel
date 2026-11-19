@@ -39,6 +39,7 @@ from app.llm.contracts import (
     LlmTextDelta,
     LlmToolCallMessage,
     LlmToolResultMessage,
+    LlmUsage,
 )
 from app.llm.dependencies import get_llm_provider
 from app.llm.errors import LlmProviderError
@@ -49,6 +50,7 @@ FIRST_REPLY = "可以第一天游西湖，第二天去灵隐寺。"
 FOLLOW_UP_CONTENT = "第二天呢？"
 WEATHER_FINAL_REPLY = "杭州当天最高约 19°C，降雨概率 20%。"
 DEGRADED_WEATHER_REPLY = "无法确认该地点的天气，请检查城市名称或补充国家/地区。"
+TEST_USAGE = LlmUsage(input_tokens=10, output_tokens=5)
 
 
 @pytest.fixture
@@ -128,7 +130,10 @@ class FakeConversationProvider:
         if self.error is not None:
             raise self.error
         content = self.contents[min(len(self.requests) - 1, len(self.contents) - 1)]
-        return LlmResponse(message=LlmAssistantMessage(content=content))
+        return LlmResponse(
+            message=LlmAssistantMessage(content=content),
+            usage=TEST_USAGE,
+        )
 
     async def stream(self, request: LlmRequest) -> AsyncGenerator[LlmTextDelta, None]:
         self.requests.append(request)
@@ -229,10 +234,12 @@ class WeatherConversationProvider:
                         "start_date": "2026-11-20",
                         "end_date": "2026-11-20",
                     },
-                )
+                ),
+                usage=TEST_USAGE,
             )
         return LlmResponse(
             message=LlmAssistantMessage(content=WEATHER_FINAL_REPLY),
+            usage=TEST_USAGE,
         )
 
     async def stream(self, request: LlmRequest) -> AsyncGenerator[LlmTextDelta, None]:
@@ -253,10 +260,12 @@ class DegradedWeatherProvider(WeatherConversationProvider):
                         "start_date": "2026-11-20",
                         "end_date": "2026-11-20",
                     },
-                )
+                ),
+                usage=TEST_USAGE,
             )
         return LlmResponse(
             message=LlmAssistantMessage(content=DEGRADED_WEATHER_REPLY),
+            usage=TEST_USAGE,
         )
 
 
@@ -273,14 +282,16 @@ class InjectionProvider(WeatherConversationProvider):
                         "start_date": "2026-11-20",
                         "end_date": "2026-11-20",
                     },
-                )
+                ),
+                usage=TEST_USAGE,
             )
         return LlmResponse(
             tool_call=ToolCall(
                 id="call_delete",
                 name="delete_everything",
                 arguments={},
-            )
+            ),
+            usage=TEST_USAGE,
         )
 
 
@@ -296,7 +307,8 @@ class AlwaysToolProvider(WeatherConversationProvider):
                     "start_date": "2026-11-20",
                     "end_date": "2026-11-20",
                 },
-            )
+            ),
+            usage=TEST_USAGE,
         )
 
 
@@ -333,7 +345,10 @@ class BlockingConversationProvider:
         self.requests.append(request)
         self.started.set()
         await self.release.wait()
-        return LlmResponse(message=LlmAssistantMessage(content=FIRST_REPLY))
+        return LlmResponse(
+            message=LlmAssistantMessage(content=FIRST_REPLY),
+            usage=TEST_USAGE,
+        )
 
     async def stream(self, request: LlmRequest) -> AsyncGenerator[LlmTextDelta, None]:
         raise AssertionError("Concurrent-send test must use complete()")
@@ -1011,6 +1026,56 @@ async def test_agent_max_steps_returns_stable_error_without_partial_persistence(
     assert response.json() == {
         "code": "agent_max_steps_reached",
         "detail": "The agent could not finish within its allowed steps.",
+    }
+    assert history_response.json() == []
+    assert len(provider.requests) == 2
+    assert len(weather_tool.calls) == 1
+
+    async with session_factory() as session:
+        conversation = await session.scalar(
+            select(Conversation).where(Conversation.id == conversation_id)
+        )
+
+    assert conversation is not None
+    assert conversation.processing_token is None
+    assert conversation.processing_expires_at is None
+
+
+@pytest.mark.anyio
+async def test_agent_token_budget_returns_stable_error_without_partial_persistence(
+    session_factory: async_sessionmaker[AsyncSession],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    user_id = await persist_user(session_factory, "Token budget")
+    provider = AlwaysToolProvider()
+    weather_tool = FakeWeatherTool()
+    monkeypatch.setattr(settings, "agent_max_total_tokens", 20)
+
+    async with session_factory() as session:
+        conversation = Conversation(user_id=user_id, title="Token budget")
+        session.add(conversation)
+        await session.commit()
+        conversation_id = conversation.id
+
+    async with make_client(
+        session_factory,
+        user_id=user_id,
+        provider=provider,
+        tool_registry=ToolRegistry([weather_tool]),
+    ) as client:
+        response = await client.post(
+            f"/api/conversations/{conversation_id}/messages",
+            json={"content": "持续查询天气"},
+            headers={"Origin": settings.frontend_origin},
+        )
+        history_response = await client.get(
+            f"/api/conversations/{conversation_id}/messages",
+        )
+
+    assert response.status_code == 502
+    assert response.json() == {
+        "code": "agent_token_budget_exceeded",
+        "detail": "The agent exceeded its token budget.",
     }
     assert history_response.json() == []
     assert len(provider.requests) == 2

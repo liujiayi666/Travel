@@ -18,7 +18,14 @@ from app.conversations.errors import (
 )
 from app.conversations.models import Conversation, Message
 from app.core.config import settings
-from app.llm.contracts import LlmAssistantMessage, LlmMessage, LlmProvider, LlmRequest, LlmTextDelta
+from app.llm.contracts import (
+    LlmAssistantMessage,
+    LlmMessage,
+    LlmPricing,
+    LlmProvider,
+    LlmRequest,
+    LlmTextDelta,
+)
 from app.llm.errors import LlmInvalidRequestError, LlmProviderError, LlmTimeoutError
 
 SYSTEM_PROMPT = (
@@ -371,17 +378,30 @@ async def send_message(
         session, user_id=user_id, conversation_id=conversation_id, content=content
     )
     try:
-        reply = await run_agent(
-            provider, registry, prepared_message_stream.request, max_steps=settings.agent_max_steps
+        run_result = await run_agent(
+            provider,
+            registry,
+            prepared_message_stream.request,
+            max_steps=settings.agent_max_steps,
+            max_total_tokens=settings.agent_max_total_tokens,
+            pricing=(
+                LlmPricing(
+                    input_usd_per_million=settings.llm_input_cost_per_million_usd,
+                    output_usd_per_million=settings.llm_output_cost_per_million_usd,
+                )
+                if settings.llm_input_cost_per_million_usd is not None
+                and settings.llm_output_cost_per_million_usd is not None
+                else None
+            ),
         )
         await _persist_exchange(
             session,
             conversation_id=conversation_id,
             lease_token=prepared_message_stream.lease_token,
             content=prepared_message_stream.content,
-            assistant_content=reply.content,
+            assistant_content=run_result.message.content,
         )
-        return reply
+        return run_result.message
     finally:
         await _release_conversation_lease_safely(
             session,
