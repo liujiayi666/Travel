@@ -1,17 +1,33 @@
 import asyncio
+import logging
+import time
 import uuid
 from collections.abc import AsyncGenerator
 from contextlib import aclosing
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from decimal import Decimal
 from typing import Literal
 
 from anyio import CancelScope
 from sqlalchemy import func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.agent.errors import (
+    AgentMaxStepsReachedError,
+    AgentTokenBudgetExceededError,
+)
 from app.agent.orchestrator import run_agent
+from app.agent.tools.errors import ToolError
 from app.agent.tools.registry import ToolRegistry
+from app.agent.trace import AgentRunTrace
+from app.agent.trace_service import (
+    cancel_agent_run,
+    complete_agent_run,
+    create_agent_run,
+    fail_agent_run,
+    mark_max_steps_reached_agent_run,
+)
 from app.conversations.errors import (
     ConversationBusyError,
     ConversationNotFoundError,
@@ -27,6 +43,8 @@ from app.llm.contracts import (
     LlmTextDelta,
 )
 from app.llm.errors import LlmInvalidRequestError, LlmProviderError, LlmTimeoutError
+
+logger = logging.getLogger(__name__)
 
 SYSTEM_PROMPT = (
     "You are Travel Copilot, a concise travel planning assistant. "
@@ -63,7 +81,11 @@ class MessageExchangeCompleted:
 
 
 async def list_conversations(
-    session: AsyncSession, *, user_id: uuid.UUID, limit: int = 10, offset: int = 0
+    session: AsyncSession,
+    *,
+    user_id: uuid.UUID,
+    limit: int = 10,
+    offset: int = 0,
 ) -> list[Conversation]:
     """List conversations for a user with pagination."""
     result = (
@@ -141,7 +163,11 @@ def _to_llm_history_message(message: Message) -> LlmMessage:
     return LlmMessage(role=role, content=message.content)
 
 
-def build_context(*, history: list[Message], content: str) -> list[LlmMessage]:
+def build_context(
+    *,
+    history: list[Message],
+    content: str,
+) -> list[LlmMessage]:
     system = LlmMessage(role="system", content=SYSTEM_PROMPT)
     current = LlmMessage(role="user", content=content)
     remaining = settings.chat_context_max_chars - len(system.content) - len(current.content)
@@ -175,6 +201,10 @@ async def _persist_exchange(
     lease_token: uuid.UUID,
     content: str,
     assistant_content: str,
+    agent_run_id: uuid.UUID | None = None,
+    trace: AgentRunTrace | None = None,
+    duration_ms: int | None = None,
+    estimated_cost_usd: Decimal | None = None,
 ) -> tuple[Message, Message]:
     conversation = (
         await session.execute(
@@ -219,6 +249,25 @@ async def _persist_exchange(
     session.add_all([conversation, user_message, assistant_message])
 
     try:
+        # Message 的 UUID 要到 flush 才能取得。
+        await session.flush()
+
+        if agent_run_id is not None:
+            if trace is None or duration_ms is None:
+                raise ValueError("Completed agent run requires trace and duration")
+
+            await complete_agent_run(
+                session,
+                agent_run_id=agent_run_id,
+                user_message_id=user_message.id,
+                assistant_message_id=assistant_message.id,
+                trace=trace,
+                duration_ms=duration_ms,
+                estimated_cost_usd=estimated_cost_usd,
+            )
+
+        # 成功事务的唯一提交点：
+        # Message + Run completed + ToolCall。
         await session.commit()
     except Exception:
         await session.rollback()
@@ -228,7 +277,11 @@ async def _persist_exchange(
 
 
 async def prepare_message_stream(
-    session: AsyncSession, *, user_id: uuid.UUID, conversation_id: uuid.UUID, content: str
+    session: AsyncSession,
+    *,
+    user_id: uuid.UUID,
+    conversation_id: uuid.UUID,
+    content: str,
 ) -> PreparedMessageStream:
     conversation, lease_token = await _claim_conversation_lease(
         session,
@@ -310,7 +363,7 @@ async def create_conversation(
     user_id: uuid.UUID,
     message: str,
 ) -> Conversation:
-    """Create a conversation titled from the message supplied by the client."""
+    """Create a conversation titled from the client's first message."""
     conversation = Conversation(
         user_id=user_id,
         title=build_conversation_title(message),
@@ -374,39 +427,151 @@ async def send_message(
 ) -> LlmAssistantMessage:
     registry = tool_registry if tool_registry is not None else ToolRegistry([])
 
-    prepared_message_stream = await prepare_message_stream(
-        session, user_id=user_id, conversation_id=conversation_id, content=content
+    prepared = await prepare_message_stream(
+        session,
+        user_id=user_id,
+        conversation_id=conversation_id,
+        content=content,
     )
+
+    trace = AgentRunTrace()
+    started_monotonic = time.perf_counter()
+    agent_run_id: uuid.UUID | None = None
+    pricing = _current_pricing()
+
     try:
+        agent_run = await create_agent_run(
+            session,
+            user_id=user_id,
+            conversation_id=conversation_id,
+            provider_name=settings.llm_provider,
+            model=provider.model,
+        )
+        agent_run_id = agent_run.id
+
+        logger.info(
+            "agent_run.started",
+            extra={
+                "run_id": agent_run_id,
+                "conversation_id": conversation_id,
+                "user_id": user_id,
+                "provider": settings.llm_provider,
+                "model": provider.model,
+            },
+        )
+
         run_result = await run_agent(
             provider,
             registry,
-            prepared_message_stream.request,
+            prepared.request,
             max_steps=settings.agent_max_steps,
             max_total_tokens=settings.agent_max_total_tokens,
-            pricing=(
-                LlmPricing(
-                    input_usd_per_million=settings.llm_input_cost_per_million_usd,
-                    output_usd_per_million=settings.llm_output_cost_per_million_usd,
-                )
-                if settings.llm_input_cost_per_million_usd is not None
-                and settings.llm_output_cost_per_million_usd is not None
-                else None
-            ),
+            pricing=pricing,
+            trace=trace,
         )
+
+        duration_ms = _elapsed_ms(started_monotonic)
+
         await _persist_exchange(
             session,
             conversation_id=conversation_id,
-            lease_token=prepared_message_stream.lease_token,
-            content=prepared_message_stream.content,
+            lease_token=prepared.lease_token,
+            content=prepared.content,
             assistant_content=run_result.message.content,
+            agent_run_id=agent_run_id,
+            trace=trace,
+            duration_ms=duration_ms,
+            estimated_cost_usd=run_result.estimated_cost_usd,
         )
+
+        logger.info(
+            "agent_run.completed",
+            extra={
+                "run_id": agent_run_id,
+                "conversation_id": conversation_id,
+                "user_id": user_id,
+                "steps": trace.steps,
+                "input_tokens": trace.usage.input_tokens,
+                "output_tokens": trace.usage.output_tokens,
+                "duration_ms": duration_ms,
+                "estimated_cost_usd": run_result.estimated_cost_usd,
+            },
+        )
+
         return run_result.message
+
+    except asyncio.CancelledError:
+        duration_ms = _elapsed_ms(started_monotonic)
+
+        await _persist_cancelled_run_safely(
+            session,
+            agent_run_id=agent_run_id,
+            trace=trace,
+            duration_ms=duration_ms,
+            estimated_cost_usd=_estimate_cost(trace, pricing),
+        )
+        logger.warning(
+            "agent_run.cancelled",
+            extra={
+                "run_id": agent_run_id,
+                "conversation_id": conversation_id,
+                "user_id": user_id,
+                "duration_ms": duration_ms,
+            },
+        )
+        raise
+
+    except AgentMaxStepsReachedError:
+        duration_ms = _elapsed_ms(started_monotonic)
+
+        await _persist_max_steps_run_safely(
+            session,
+            agent_run_id=agent_run_id,
+            trace=trace,
+            duration_ms=duration_ms,
+            estimated_cost_usd=_estimate_cost(trace, pricing),
+        )
+        logger.warning(
+            "agent_run.max_steps_reached",
+            extra={
+                "run_id": agent_run_id,
+                "conversation_id": conversation_id,
+                "user_id": user_id,
+                "steps": trace.steps,
+                "duration_ms": duration_ms,
+            },
+        )
+        raise
+
+    except Exception as exc:
+        duration_ms = _elapsed_ms(started_monotonic)
+
+        await _persist_failed_run_safely(
+            session,
+            agent_run_id=agent_run_id,
+            failure_code=_failure_code(exc),
+            trace=trace,
+            duration_ms=duration_ms,
+            estimated_cost_usd=_estimate_cost(trace, pricing),
+        )
+        logger.warning(
+            "agent_run.failed",
+            extra={
+                "run_id": agent_run_id,
+                "conversation_id": conversation_id,
+                "user_id": user_id,
+                "failure_code": _failure_code(exc),
+                "error_type": type(exc).__name__,
+                "duration_ms": duration_ms,
+            },
+        )
+        raise
+
     finally:
         await _release_conversation_lease_safely(
             session,
             conversation_id=conversation_id,
-            lease_token=prepared_message_stream.lease_token,
+            lease_token=prepared.lease_token,
         )
 
 
@@ -452,3 +617,174 @@ async def stream_message(
             conversation_id=conversation_id,
             lease_token=prepared.lease_token,
         )
+
+
+def _current_pricing() -> LlmPricing | None:
+    if (
+        settings.llm_input_cost_per_million_usd is None
+        or settings.llm_output_cost_per_million_usd is None
+    ):
+        return None
+
+    return LlmPricing(
+        input_usd_per_million=(settings.llm_input_cost_per_million_usd),
+        output_usd_per_million=(settings.llm_output_cost_per_million_usd),
+    )
+
+
+def _estimate_cost(
+    trace: AgentRunTrace,
+    pricing: LlmPricing | None,
+) -> Decimal | None:
+    return pricing.estimate_cost(trace.usage) if pricing is not None else None
+
+
+def _elapsed_ms(started_monotonic: float) -> int:
+    return max(
+        0,
+        round((time.perf_counter() - started_monotonic) * 1000),
+    )
+
+
+def _failure_code(exc: Exception) -> str:
+    if isinstance(exc, AgentTokenBudgetExceededError):
+        return exc.code
+
+    if isinstance(exc, LlmTimeoutError):
+        return "llm_timeout"
+
+    if isinstance(exc, ToolError):
+        return exc.code
+
+    if isinstance(exc, LlmProviderError):
+        return "llm_provider_error"
+
+    if isinstance(exc, ConversationBusyError):
+        return "conversation_busy"
+
+    if isinstance(exc, ConversationNotFoundError):
+        return "conversation_not_found"
+
+    return "internal_error"
+
+
+async def _persist_failed_run_safely(
+    session: AsyncSession,
+    *,
+    agent_run_id: uuid.UUID | None,
+    failure_code: str,
+    trace: AgentRunTrace,
+    duration_ms: int,
+    estimated_cost_usd: Decimal | None,
+) -> None:
+    if agent_run_id is None:
+        return
+
+    with CancelScope(shield=True):
+        try:
+            finalized = await fail_agent_run(
+                session,
+                agent_run_id=agent_run_id,
+                failure_code=failure_code,
+                trace=trace,
+                duration_ms=duration_ms,
+                estimated_cost_usd=estimated_cost_usd,
+            )
+
+            if not finalized:
+                await session.rollback()
+                logger.warning(
+                    "Agent run was already terminal",
+                    extra={"run_id": agent_run_id},
+                )
+                return
+
+            await session.commit()
+
+        except Exception:
+            await session.rollback()
+            logger.exception(
+                "Failed to persist failed agent run",
+                extra={
+                    "run_id": agent_run_id,
+                    "failure_code": failure_code,
+                },
+            )
+
+
+async def _persist_cancelled_run_safely(
+    session: AsyncSession,
+    *,
+    agent_run_id: uuid.UUID | None,
+    trace: AgentRunTrace,
+    duration_ms: int,
+    estimated_cost_usd: Decimal | None,
+) -> None:
+    if agent_run_id is None:
+        return
+
+    with CancelScope(shield=True):
+        try:
+            finalized = await cancel_agent_run(
+                session,
+                agent_run_id=agent_run_id,
+                trace=trace,
+                duration_ms=duration_ms,
+                estimated_cost_usd=estimated_cost_usd,
+            )
+
+            if not finalized:
+                await session.rollback()
+                logger.warning(
+                    "Agent run was already terminal",
+                    extra={"run_id": agent_run_id},
+                )
+                return
+
+            await session.commit()
+
+        except Exception:
+            await session.rollback()
+            logger.exception(
+                "Failed to persist cancelled agent run",
+                extra={"run_id": agent_run_id},
+            )
+
+
+async def _persist_max_steps_run_safely(
+    session: AsyncSession,
+    *,
+    agent_run_id: uuid.UUID | None,
+    trace: AgentRunTrace,
+    duration_ms: int,
+    estimated_cost_usd: Decimal | None,
+) -> None:
+    if agent_run_id is None:
+        return
+
+    with CancelScope(shield=True):
+        try:
+            finalized = await mark_max_steps_reached_agent_run(
+                session,
+                agent_run_id=agent_run_id,
+                trace=trace,
+                duration_ms=duration_ms,
+                estimated_cost_usd=estimated_cost_usd,
+            )
+
+            if not finalized:
+                await session.rollback()
+                logger.warning(
+                    "Agent run was already terminal",
+                    extra={"run_id": agent_run_id},
+                )
+                return
+
+            await session.commit()
+
+        except Exception:
+            await session.rollback()
+            logger.exception(
+                "Failed to persist max-step agent run",
+                extra={"run_id": agent_run_id},
+            )

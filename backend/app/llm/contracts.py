@@ -89,5 +89,7 @@ class LlmTextDelta:
 
 
 class LlmProvider(Protocol):
+    model: str
+
     async def complete(self, request: LlmRequest) -> LlmResponse: ...
     def stream(self, request: LlmRequest) -> AsyncGenerator[LlmTextDelta, None]: ...

@@ -1,9 +1,13 @@
 import asyncio
+import time
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from decimal import Decimal
 
 from app.agent.errors import AgentMaxStepsReachedError, AgentTokenBudgetExceededError
+from app.agent.tools.errors import ToolError
 from app.agent.tools.registry import ToolRegistry
+from app.agent.trace import AgentRunTrace
 from app.core.config import settings
 from app.llm.contracts import (
     LlmAssistantMessage,
@@ -34,6 +38,7 @@ async def run_agent(
     max_steps: int,
     max_total_tokens: int,
     pricing: LlmPricing | None = None,
+    trace: AgentRunTrace,
 ) -> AgentRunResult:
     if max_steps < 1:
         raise ValueError("max_steps must be at least 1")
@@ -49,10 +54,12 @@ async def run_agent(
                 response = await provider.complete(
                     LlmRequest(messages=tuple(messages), tools=registry.definitions)
                 )
-                usage = LlmUsage(
-                    input_tokens=usage.input_tokens + response.usage.input_tokens,
-                    output_tokens=usage.output_tokens + response.usage.output_tokens,
+
+                trace.record_model_response(
+                    step=step,
+                    usage=response.usage,
                 )
+                usage = trace.usage
 
                 # 先计算有没有超过预算再调用工具 否则预算已超时仍可能产生副作用
                 if usage.total_tokens > max_total_tokens:
@@ -82,8 +89,50 @@ async def run_agent(
 
                 if step == max_steps:  # 再判断步数
                     raise AgentMaxStepsReachedError(max_steps)
+                started_at = datetime.now(UTC)
+                started_monotonic = time.perf_counter()
 
-                tool_result = await tool.execute(tool_call)
+                try:
+                    tool_result = await tool.execute(tool_call)
+                except asyncio.CancelledError:
+                    trace.record_tool(
+                        call_id=tool_call.id,
+                        tool_name=tool_call.name,
+                        status="failed",
+                        error_code="cancelled",
+                        started_at=started_at,
+                        started_monotonic=started_monotonic,
+                    )
+                    raise
+                except ToolError as exc:
+                    trace.record_tool(
+                        call_id=tool_call.id,
+                        tool_name=tool_call.name,
+                        status="failed",
+                        error_code=exc.code,
+                        started_at=started_at,
+                        started_monotonic=started_monotonic,
+                    )
+                    raise
+                except Exception:
+                    trace.record_tool(
+                        call_id=tool_call.id,
+                        tool_name=tool_call.name,
+                        status="failed",
+                        error_code="tool_execution_error",
+                        started_at=started_at,
+                        started_monotonic=started_monotonic,
+                    )
+                    raise
+                else:
+                    trace.record_tool(
+                        call_id=tool_call.id,
+                        tool_name=tool_call.name,
+                        status=tool_result.status,
+                        error_code=tool_result.error_code,
+                        started_at=started_at,
+                        started_monotonic=started_monotonic,
+                    )
                 messages.append(LlmToolCallMessage(tool_call=tool_call))
                 messages.append(LlmToolResultMessage(tool_result=tool_result))
         raise AssertionError("agent loop exited without a terminal state")

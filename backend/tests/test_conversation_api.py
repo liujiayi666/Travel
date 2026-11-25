@@ -115,6 +115,8 @@ def make_user(display_name: str) -> User:
 
 
 class FakeConversationProvider:
+    model = "test-model"
+
     def __init__(
         self,
         contents: list[str] | None = None,
@@ -219,6 +221,8 @@ class FailingTool:
 
 
 class WeatherConversationProvider:
+    model = "test-model"
+
     def __init__(self) -> None:
         self.requests: list[LlmRequest] = []
 
@@ -313,6 +317,8 @@ class AlwaysToolProvider(WeatherConversationProvider):
 
 
 class FakeStreamingConversationProvider:
+    model = "test-model"
+
     def __init__(
         self,
         contents: list[str],
@@ -336,6 +342,8 @@ class FakeStreamingConversationProvider:
 
 
 class BlockingConversationProvider:
+    model = "test-model"
+
     def __init__(self) -> None:
         self.requests: list[LlmRequest] = []
         self.started = asyncio.Event()
@@ -356,6 +364,8 @@ class BlockingConversationProvider:
 
 
 class TakeoverStreamingProvider:
+    model = "test-model"
+
     def __init__(self) -> None:
         self.requests: list[LlmRequest] = []
         self.started = asyncio.Event()

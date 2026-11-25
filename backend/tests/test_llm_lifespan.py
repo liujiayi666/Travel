@@ -7,6 +7,8 @@ from app.llm.contracts import LlmAssistantMessage, LlmRequest, LlmResponse, LlmU
 
 
 class FakeProvider:
+    model = "test-model"
+
     async def complete(self, request: LlmRequest) -> LlmResponse:
         return LlmResponse(
             message=LlmAssistantMessage(role="assistant", content="ok"),

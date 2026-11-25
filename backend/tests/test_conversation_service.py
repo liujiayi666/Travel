@@ -152,6 +152,8 @@ async def test_send_message_releases_read_transaction_before_provider_call(
         await session.commit()
 
         class TransactionProbeProvider:
+            model = "test-model"
+
             async def complete(self, request: LlmRequest) -> LlmResponse:
                 transaction_states.append(session.in_transaction())
                 return LlmResponse(
@@ -208,6 +210,8 @@ async def test_provider_failure_releases_conversation_lease(
     session_factory: async_sessionmaker[AsyncSession],
 ) -> None:
     class FailingProvider:
+        model = "test-model"
+
         async def complete(self, request: LlmRequest) -> LlmResponse:
             raise LlmProviderError("provider failed")
 
@@ -244,6 +248,8 @@ async def test_persistence_failure_releases_conversation_lease(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     class SuccessfulProvider:
+        model = "test-model"
+
         async def complete(self, request: LlmRequest) -> LlmResponse:
             return LlmResponse(
                 message=LlmAssistantMessage(content="reply"),
@@ -287,6 +293,8 @@ async def test_consumer_stop_releases_conversation_lease(
     session_factory: async_sessionmaker[AsyncSession],
 ) -> None:
     class SlowStreamingProvider:
+        model = "test-model"
+
         async def complete(self, request: LlmRequest) -> LlmResponse:
             raise AssertionError("Streaming test must not call complete()")
 
@@ -331,6 +339,8 @@ async def test_stream_timeout_releases_conversation_lease(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     class SlowStreamingProvider:
+        model = "test-model"
+
         async def complete(self, request: LlmRequest) -> LlmResponse:
             raise AssertionError("Streaming test must not call complete()")
 
@@ -377,6 +387,8 @@ async def test_cancelled_stream_releases_conversation_lease(
     session_factory: async_sessionmaker[AsyncSession],
 ) -> None:
     class BlockingStreamingProvider:
+        model = "test-model"
+
         def __init__(self) -> None:
             self.waiting = asyncio.Event()
 
@@ -508,6 +520,7 @@ async def test_stale_lease_token_cannot_persist(
 @pytest.mark.anyio
 async def test_stream_message_closes_provider_when_consumer_stops() -> None:
     class ClosingProbeProvider:
+        model = "test-model"
         closed = False
 
         async def complete(self, request: LlmRequest) -> LlmResponse:
