@@ -2,11 +2,13 @@ import uuid
 from datetime import UTC, datetime
 from decimal import Decimal
 
-from sqlalchemy import update
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.agent.errors import AgentRunNotFoundError
 from app.agent.models import AgentRun, AgentRunStatus, AgentToolCall
 from app.agent.trace import AgentRunTrace, ToolExecutionTrace
+from app.conversations.models import Conversation
 
 _FAILED_TERMINAL_STATUSES: frozenset[AgentRunStatus] = frozenset(
     {
@@ -151,6 +153,36 @@ async def mark_max_steps_reached_agent_run(
         duration_ms=duration_ms,
         estimated_cost_usd=estimated_cost_usd,
     )
+
+
+async def get_agent_run(
+    session: AsyncSession,
+    *,
+    user_id: uuid.UUID,
+    run_id: uuid.UUID,
+) -> tuple[AgentRun, list[AgentToolCall]]:
+    agent_run = await session.scalar(
+        select(AgentRun)
+        .join(Conversation, Conversation.id == AgentRun.conversation_id)
+        .where(
+            AgentRun.id == run_id,
+            AgentRun.user_id == user_id,
+            Conversation.user_id == user_id,
+        )
+    )
+    if agent_run is None:
+        raise AgentRunNotFoundError()
+
+    tool_calls = list(
+        (
+            await session.scalars(
+                select(AgentToolCall)
+                .where(AgentToolCall.agent_run_id == run_id)
+                .order_by(AgentToolCall.sequence.asc())
+            )
+        ).all()
+    )
+    return agent_run, tool_calls
 
 
 async def _finalize_failed_agent_run(

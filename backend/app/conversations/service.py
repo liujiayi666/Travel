@@ -16,6 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.agent.errors import (
     AgentMaxStepsReachedError,
     AgentTokenBudgetExceededError,
+    attach_agent_run_id,
 )
 from app.agent.orchestrator import run_agent
 from app.agent.tools.errors import ToolError
@@ -78,6 +79,12 @@ class PreparedMessageStream:
 class MessageExchangeCompleted:
     user_message: Message
     assistant_message: Message
+
+
+@dataclass(frozen=True)
+class SendMessageResult:
+    message: LlmAssistantMessage
+    run_id: uuid.UUID
 
 
 async def list_conversations(
@@ -424,7 +431,7 @@ async def send_message(
     conversation_id: uuid.UUID,
     content: str,
     tool_registry: ToolRegistry | None = None,
-) -> LlmAssistantMessage:
+) -> SendMessageResult:
     registry = tool_registry if tool_registry is not None else ToolRegistry([])
 
     prepared = await prepare_message_stream(
@@ -498,7 +505,10 @@ async def send_message(
             },
         )
 
-        return run_result.message
+        return SendMessageResult(
+            message=run_result.message,
+            run_id=agent_run.id,
+        )
 
     except asyncio.CancelledError:
         duration_ms = _elapsed_ms(started_monotonic)
@@ -521,7 +531,8 @@ async def send_message(
         )
         raise
 
-    except AgentMaxStepsReachedError:
+    except AgentMaxStepsReachedError as exc:
+        attach_agent_run_id(exc, agent_run_id)
         duration_ms = _elapsed_ms(started_monotonic)
 
         await _persist_max_steps_run_safely(
@@ -544,6 +555,7 @@ async def send_message(
         raise
 
     except Exception as exc:
+        attach_agent_run_id(exc, agent_run_id)
         duration_ms = _elapsed_ms(started_monotonic)
 
         await _persist_failed_run_safely(

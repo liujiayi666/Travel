@@ -42,6 +42,7 @@ class AssistantMessageResponse(BaseModel):
 class SendMessageResponse(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
+    run_id: uuid.UUID
     message: AssistantMessageResponse
 
 

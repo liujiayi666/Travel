@@ -258,7 +258,7 @@ async def test_send_message_completes_run_and_persists_exchange_atomically(
     weather_tool = RecordingWeatherTool()
 
     async with session_factory() as session:
-        reply = await send_message(
+        result = await send_message(
             session,
             provider,
             user_id=user_id,
@@ -267,7 +267,7 @@ async def test_send_message_completes_run_and_persists_exchange_atomically(
             tool_registry=ToolRegistry([weather_tool]),
         )
 
-    assert reply.content == "杭州当天最高约 19°C。"
+    assert result.message.content == "杭州当天最高约 19°C。"
 
     run = await load_run(session_factory, conversation_id=conversation_id)
     tool_calls = await load_tool_calls(session_factory, agent_run_id=run.id)

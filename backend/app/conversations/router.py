@@ -111,7 +111,7 @@ async def send_conversation_message(
     provider: Annotated[LlmProvider, Depends(get_llm_provider)],
     tool_registry: Annotated[ToolRegistry, Depends(get_tool_registry)],
 ):
-    reply = await send_message(
+    result = await send_message(
         session,
         provider,
         conversation_id=conversation_id,
@@ -119,7 +119,10 @@ async def send_conversation_message(
         content=payload.content,
         tool_registry=tool_registry,
     )
-    return to_send_message_response(reply)
+    return to_send_message_response(
+        result.message,
+        run_id=result.run_id,
+    )
 
 
 @router.post(

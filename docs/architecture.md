@@ -356,6 +356,14 @@ Provider 返回 response + usage
 
 因此一次响应最多会让总量超出预算一个由 `max_tokens` 限定的有界额度；这比维护一个与真实供应商不一致的本地 tokenizer 更诚实。超限后不再调用 Provider，也不执行当前响应提议的工具。Token、耗时、成本和最终失败原因是运行观测数据，A10.2 先在 Orchestrator 结果/异常中暴露，A10.3 再持久化。
 
+### 8.4 A10.3 AgentRun Trace 与查询边界
+
+非流式消息成功响应除 assistant message 外返回 `run_id`。`GET /api/runs/{runId}` 是登录用户可调用的只读诊断接口，必须同时校验 AgentRun 所属 Conversation 的 owner；不存在与非 owner 统一返回 404。
+
+返回内容仅包含 Run 白名单元数据和已执行 ToolCall 摘要：状态、provider/model、时间/耗时、steps、token、成本、稳定失败码及工具名/状态/错误码。不得返回 Prompt、Message 正文、工具参数/结果正文、Session token 或 Conversation lease。
+
+PostgreSQL 保存运行生命周期和工具摘要；结构化日志用同一 `runId` 关联过程事件。A10.3 先覆盖非流式 Agent 路径，SSE `runId` 仍只是传输关联 ID，工具事件 SSE 后续单独实现。
+
 ## 9. 核心数据模型
 
 ```text
@@ -420,6 +428,7 @@ GET  /api/conversations                A7 读取当前用户的 Conversation 列
 GET  /api/conversations/{id}/messages  A7 分页读取历史
 POST /api/conversations/{id}/messages  A7 发送首条或后续 content，返回 assistant 回复
 POST /api/conversations/{id}/messages/stream  A8 同语义 SSE
+GET  /api/runs/{runId}                 A10.3 owner-scoped AgentRun 诊断
 GET  /api/trips/{tripId}/messages
 POST /api/trips/{tripId}/runs/stream    SSE 流式生成
 POST /api/runs/{runId}/cancel
