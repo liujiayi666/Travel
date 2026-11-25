@@ -4,7 +4,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from app.chat.schemas import MAX_TEXT_CHARS_PER_MESSAGE
+MAX_TEXT_CHARS_PER_MESSAGE = 4000
 
 
 class ConversationCreateRequest(BaseModel):
@@ -30,6 +30,20 @@ class SendMessageRequest(BaseModel):
         if isinstance(value, str):
             return value.strip()
         return value
+
+
+class AssistantMessageResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    role: Literal["assistant"]
+    content: str = Field(min_length=1)
+
+
+class SendMessageResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    run_id: uuid.UUID
+    message: AssistantMessageResponse
 
 
 class ConversationResponse(BaseModel):

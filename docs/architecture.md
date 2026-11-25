@@ -315,6 +315,55 @@ A9.1 先接入 `POST /api/conversations/{id}/messages` 的非流式路径。工�
 - `llm/providers/` 在出现第二个真正不同的适配器时再拆；DeepSeek 与 GLM 当前共用 OpenAI-compatible adapter。
 - 新测试先放 `tests/agent/`；已有扁平测试不需要为目录美观整体迁移。
 
+### 8.2 A10 受控 Agent Loop
+
+A10 把 A9.1 的固定单工具流程升级为通用但有界的循环，同时保持 Provider、Tool 和 Conversation 三层职责不变：
+
+```text
+Conversation Service
+  ownership / lease / context / final Message persistence
+        ↓
+Agent Orchestrator
+  LLM decision → allowlist/tool → ToolResult → LLM decision → terminal state
+        ↓
+LlmProvider                         ToolRegistry
+  provider-neutral LLM DTO            validated tool execution
+```
+
+循环控制规则：
+
+- `max_steps` 定义为一次 AgentRun 最多允许的 LLM 决策次数。直接回答消耗 1 步；每次工具提议也消耗 1 步。
+- 每一步都只接受至多一个应用 `ToolCall`，并从 Registry 重新确认工具白名单；模型不能凭工具结果文本扩大权限。
+- 在最后一次允许的决策中，如果模型仍提议工具，服务端先校验工具名，但不执行该工具，以 `max_steps_reached` 终止。这样可以避免没有后续回答预算时执行未来可能带副作用的工具。
+- 工具执行成功后，按顺序把匹配的 assistant ToolCall 与 tool ToolResult 加入下一轮请求；可恢复的领域错误以 `ToolResult(status="error")` 交给模型，技术型 Tool/Provider 失败保持原有错误边界。
+- 整个循环共享一个 Run deadline；用户取消必须停止循环并沿 Provider/Tool 调用链传播，不能留下永久 running 状态。
+- `completed`、`failed`、`cancelled`、`max_steps_reached` 是运行终态，不是 HTTP 状态。Conversation 只在获得完整最终回答后原子保存本轮 Message。
+
+A10 分四个学习切片：A10.1 受控循环与终止状态；A10.2 deadline、usage 与成本预算；A10.3 AgentRun/ToolCall trace；A10.4 固定 eval。工具事件 SSE 不在这些前置切片中伪装成已完成能力，后续单独接入。
+
+### 8.3 A10.2 Usage 与 Run 预算
+
+非流式 LLM 调用在 Provider 边界把供应商 usage 归一化为应用自己的 input/output token。单次调用 timeout、单次 Tool timeout 和整个 AgentRun deadline 保持分层，不能用一个“超时”字段混掉。
+
+Run token 预算遵循以下顺序：
+
+```text
+Provider 返回 response + usage
+→ 累计本轮 input/output token
+→ 检查 Run 总预算
+→ 未超限才允许执行该响应提议的工具或返回最终回答
+```
+
+因此一次响应最多会让总量超出预算一个由 `max_tokens` 限定的有界额度；这比维护一个与真实供应商不一致的本地 tokenizer 更诚实。超限后不再调用 Provider，也不执行当前响应提议的工具。Token、耗时、成本和最终失败原因是运行观测数据，A10.2 先在 Orchestrator 结果/异常中暴露，A10.3 再持久化。
+
+### 8.4 A10.3 AgentRun Trace 与查询边界
+
+非流式消息成功响应除 assistant message 外返回 `run_id`。`GET /api/runs/{runId}` 是登录用户可调用的只读诊断接口，必须同时校验 AgentRun 所属 Conversation 的 owner；不存在与非 owner 统一返回 404。
+
+返回内容仅包含 Run 白名单元数据和已执行 ToolCall 摘要：状态、provider/model、时间/耗时、steps、token、成本、稳定失败码及工具名/状态/错误码。不得返回 Prompt、Message 正文、工具参数/结果正文、Session token 或 Conversation lease。
+
+PostgreSQL 保存运行生命周期和工具摘要；结构化日志用同一 `runId` 关联过程事件。A10.3 先覆盖非流式 Agent 路径，SSE `runId` 仍只是传输关联 ID，工具事件 SSE 后续单独实现。
+
 ## 9. 核心数据模型
 
 ```text
@@ -374,18 +423,18 @@ DELETE /api/trips/{tripId}
 ### 10.3 对话与 AI
 
 ```text
-POST /api/chat                         A6 单轮；A7 迁移到 Conversation API
 POST /api/conversations                A7 创建 Conversation，只返回 ConversationResource
 GET  /api/conversations                A7 读取当前用户的 Conversation 列表
 GET  /api/conversations/{id}/messages  A7 分页读取历史
 POST /api/conversations/{id}/messages  A7 发送首条或后续 content，返回 assistant 回复
 POST /api/conversations/{id}/messages/stream  A8 同语义 SSE
+GET  /api/runs/{runId}                 A10.3 owner-scoped AgentRun 诊断
 GET  /api/trips/{tripId}/messages
 POST /api/trips/{tripId}/runs/stream    SSE 流式生成
 POST /api/runs/{runId}/cancel
 ```
 
-A6 先打通“已认证用户输入一条消息 → Provider → 返回完整答案”，不保存 Message。A7 建立服务端权威的 Conversation / Message：前端只拉取历史用于展示，并在发送时提交当前 `content`；后端完成所有权检查、读取有限历史、上下文预算、system prompt 拼装和消息持久化。发送接口只返回本轮新增的 assistant 回复；客户端不能提交完整 history 或 system 消息，避免伪造 assistant 内容、绕过预算或跨用户读取。
+A6 的临时 `POST /api/chat` 已由 Conversation API 取代并从应用中移除。当前唯一聊天写入入口是 `POST /api/conversations/{id}/messages` 及其 SSE 版本。A7 建立服务端权威的 Conversation / Message：前端只拉取历史用于展示，并在发送时提交当前 `content`；后端完成所有权检查、读取有限历史、上下文预算、system prompt 拼装和消息持久化。发送接口只返回本轮新增的 assistant 回复；客户端不能提交完整 history 或 system 消息，避免伪造 assistant 内容、绕过预算或跨用户读取。
 
 `POST /api/conversations` 只负责创建 ConversationResource，不调用 Provider，也不保存 Message。请求必须携带首条 `message`，服务端只把它规范化并截取前 50 字符作为初始 title，不把该字段写成 Message；接口返回 `201 + ConversationResponse`。
 
@@ -555,7 +604,7 @@ outputTokens
 
 ### Phase 2：最小文本聊天
 
-- 已认证用户通过 `POST /api/chat` 输入一条消息，获得非流式完整答案。
+- A6 曾通过临时 `POST /api/chat` 获得非流式答案；该入口已移除，当前所有聊天写入统一使用 Conversation API。
 - 浏览器展示一次真实一问一答；刷新后暂不要求恢复历史。
 - Route 只负责 HTTP；Chat Service 通过 Provider 接口调用模型。
 - 使用 fake provider 验证成功、超时和上游失败；密钥只存在于后端 `.env`。

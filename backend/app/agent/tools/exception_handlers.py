@@ -3,7 +3,8 @@ import logging
 from fastapi import FastAPI, Request, status
 from fastapi.responses import JSONResponse
 
-from app.agent.tools.error import (
+from app.agent.errors import get_agent_run_error_metadata
+from app.agent.tools.errors import (
     ToolError,
     ToolExecutionError,
     ToolInvalidArgumentsError,
@@ -56,10 +57,13 @@ def install_tool_error_handler(app: FastAPI) -> None:
             },
         )
 
+        run_id_fields, run_id_headers = get_agent_run_error_metadata(exc)
         return JSONResponse(
             status_code=status_code,
             content={
                 "code": exc.code,
                 "detail": detail,
+                **run_id_fields,
             },
+            headers=run_id_headers,
         )

@@ -10,6 +10,7 @@ from app.llm.contracts import (
     LlmMessage,
     LlmRequest,
     LlmTextRole,
+    LlmUsage,
 )
 from app.llm.errors import LlmInvalidRequestError, LlmProviderError, LlmTimeoutError
 from app.llm.openai_compatible_provider import (
@@ -18,6 +19,7 @@ from app.llm.openai_compatible_provider import (
 )
 
 MAX_TOKENS = 1000
+TEST_USAGE = SimpleNamespace(prompt_tokens=12, completion_tokens=4)
 
 
 def make_client(
@@ -34,7 +36,10 @@ def make_client(
 
 def make_completion(content: str | None):
     message = SimpleNamespace(content=content)
-    return SimpleNamespace(choices=[SimpleNamespace(message=message)])
+    return SimpleNamespace(
+        choices=[SimpleNamespace(message=message)],
+        usage=TEST_USAGE,
+    )
 
 
 def make_streaming_chunk(content: str | None):
@@ -100,6 +105,7 @@ async def test_provider_returns_assistant_message_and_maps_messages_to_sdk() -> 
         role="assistant",
         content="杭州周末可以去西湖。",
     )
+    assert response.usage == LlmUsage(input_tokens=12, output_tokens=4)
     create.assert_awaited_once()
     await_args = create.await_args
     assert await_args is not None

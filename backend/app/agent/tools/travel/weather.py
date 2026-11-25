@@ -6,7 +6,7 @@ import httpx
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 
 from app.agent.contracts import ToolCall, ToolDefinition, ToolResult
-from app.agent.tools.error import (
+from app.agent.tools.errors import (
     ToolError,
     ToolExecutionError,
     ToolInvalidArgumentsError,

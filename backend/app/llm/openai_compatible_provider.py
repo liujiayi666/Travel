@@ -3,6 +3,7 @@ from collections.abc import AsyncGenerator
 from typing import Any, cast
 
 from openai import APIError, APITimeoutError, AsyncOpenAI
+from openai.types import CompletionUsage
 from openai.types.chat import ChatCompletionMessageParam, ChatCompletionToolParam
 from pydantic import ValidationError
 
@@ -16,6 +17,7 @@ from app.llm.contracts import (
     LlmTextDelta,
     LlmToolCallMessage,
     LlmToolResultMessage,
+    LlmUsage,
 )
 from app.llm.errors import LlmInvalidRequestError, LlmProviderError, LlmTimeoutError
 
@@ -50,6 +52,7 @@ class OpenAICompatibleProvider:
         content = completion.choices[0].message.content
         upstream_message = completion.choices[0].message
         tool_calls = getattr(upstream_message, "tool_calls", None) or []
+        usage = to_llm_usage(completion.usage)
         if len(tool_calls) > 1:
             # TODO: implement on A10
             raise LlmProviderError("Language model returned more than one tool call")
@@ -71,11 +74,11 @@ class OpenAICompatibleProvider:
             except (json.JSONDecodeError, TypeError, ValueError, ValidationError) as exc:
                 raise LlmProviderError("Language model returned an invalid tool call") from exc
 
-            return LlmResponse(tool_call=tool_call)
+            return LlmResponse(tool_call=tool_call, usage=usage)
         if content is None or not content.strip():
             raise LlmProviderError("Language model returned no text")
         return LlmResponse(
-            message=LlmAssistantMessage(role="assistant", content=content),
+            message=LlmAssistantMessage(role="assistant", content=content), usage=usage
         )
 
     async def stream(self, request: LlmRequest) -> AsyncGenerator[LlmTextDelta, None]:
@@ -175,3 +178,16 @@ def to_sdk_tool(tool: ToolDefinition) -> ChatCompletionToolParam:
             },
         },
     )
+
+
+def to_llm_usage(upstream_usage: CompletionUsage | None) -> LlmUsage:
+    if upstream_usage is None:
+        raise LlmProviderError("Language model returned no usage")
+
+    try:
+        return LlmUsage(
+            input_tokens=upstream_usage.prompt_tokens,
+            output_tokens=upstream_usage.completion_tokens,
+        )
+    except (AttributeError, TypeError, ValidationError):
+        raise LlmProviderError("Language model returned invalid usage")

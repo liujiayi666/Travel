@@ -4,7 +4,7 @@ import pytest
 from fastapi import FastAPI, status
 from fastapi.testclient import TestClient
 
-from app.agent.tools.error import (
+from app.agent.tools.errors import (
     ToolError,
     ToolExecutionError,
     ToolInvalidArgumentsError,

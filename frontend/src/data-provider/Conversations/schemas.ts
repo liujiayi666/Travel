@@ -35,9 +35,15 @@ const sendMessageResponseMessage = z.object({
   content: z.string(),
 });
 
-export const sendMessageResponse = z.object({
-  message: sendMessageResponseMessage,
-});
+export const sendMessageResponse = z
+  .object({
+    run_id: z.string(),
+    message: sendMessageResponseMessage,
+  })
+  .transform(({ run_id, ...rest }) => ({
+    ...rest,
+    runId: run_id,
+  }));
 
 export const conversationMessageResponseSchema = z
   .object({

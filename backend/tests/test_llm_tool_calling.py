@@ -15,12 +15,15 @@ from app.llm.contracts import (
     LlmRequest,
     LlmToolCallMessage,
     LlmToolResultMessage,
+    LlmUsage,
 )
 from app.llm.errors import LlmInvalidRequestError, LlmProviderError
 from app.llm.openai_compatible_provider import (
     OpenAICompatibleProvider,
     to_sdk_message,
 )
+
+DEFAULT_UPSTREAM_USAGE = SimpleNamespace(prompt_tokens=12, completion_tokens=4)
 
 
 def make_client(completion: object) -> tuple[AsyncOpenAI, AsyncMock]:
@@ -35,9 +38,14 @@ def make_provider(client: AsyncOpenAI) -> OpenAICompatibleProvider:
     return OpenAICompatibleProvider(client, "test-model", max_tokens=1000)
 
 
-def make_completion(message: object) -> object:
+def make_completion(
+    message: object,
+    *,
+    usage: object | None = DEFAULT_UPSTREAM_USAGE,
+) -> object:
     return SimpleNamespace(
         choices=[SimpleNamespace(message=message)],
+        usage=usage,
     )
 
 
@@ -56,6 +64,7 @@ async def test_provider_sends_application_tools_in_chat_completions_shape() -> N
     )
 
     assert response.message == LlmAssistantMessage(content="直接回答")
+    assert response.usage == LlmUsage(input_tokens=12, output_tokens=4)
     await_args = create.await_args
     assert await_args is not None
     call = await_args.kwargs
@@ -112,6 +121,7 @@ async def test_provider_normalizes_openai_tool_call() -> None:
             "end_date": "2026-11-20",
         },
     )
+    assert response.usage == LlmUsage(input_tokens=12, output_tokens=4)
 
 
 @pytest.mark.anyio
@@ -164,6 +174,39 @@ async def test_provider_rejects_invalid_tool_arguments_json() -> None:
     provider = make_provider(client)
 
     with pytest.raises(LlmProviderError, match="invalid tool call"):
+        await provider.complete(
+            LlmRequest(
+                messages=[LlmMessage(role="user", content="杭州天气")],
+            )
+        )
+
+
+@pytest.mark.anyio
+async def test_provider_rejects_missing_usage() -> None:
+    client, _ = make_client(
+        make_completion(SimpleNamespace(content="回答"), usage=None),
+    )
+    provider = make_provider(client)
+
+    with pytest.raises(LlmProviderError, match="no usage"):
+        await provider.complete(
+            LlmRequest(
+                messages=[LlmMessage(role="user", content="杭州天气")],
+            )
+        )
+
+
+@pytest.mark.anyio
+async def test_provider_rejects_invalid_usage() -> None:
+    client, _ = make_client(
+        make_completion(
+            SimpleNamespace(content="回答"),
+            usage=SimpleNamespace(prompt_tokens=-1, completion_tokens=4),
+        ),
+    )
+    provider = make_provider(client)
+
+    with pytest.raises(LlmProviderError, match="invalid usage"):
         await provider.complete(
             LlmRequest(
                 messages=[LlmMessage(role="user", content="杭州天气")],

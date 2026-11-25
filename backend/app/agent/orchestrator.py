@@ -1,52 +1,140 @@
 import asyncio
-from dataclasses import replace
+import time
+from dataclasses import dataclass
+from datetime import UTC, datetime
+from decimal import Decimal
 
+from app.agent.errors import AgentMaxStepsReachedError, AgentTokenBudgetExceededError
+from app.agent.tools.errors import ToolError
 from app.agent.tools.registry import ToolRegistry
+from app.agent.trace import AgentRunTrace
 from app.core.config import settings
 from app.llm.contracts import (
     LlmAssistantMessage,
+    LlmContextMessage,
+    LlmPricing,
     LlmProvider,
     LlmRequest,
     LlmToolCallMessage,
     LlmToolResultMessage,
+    LlmUsage,
 )
 from app.llm.errors import LlmProviderError, LlmTimeoutError
 
 
-async def answer_with_one_tool(
+@dataclass(frozen=True)
+class AgentRunResult:
+    message: LlmAssistantMessage
+    steps: int
+    usage: LlmUsage
+    estimated_cost_usd: Decimal | None
+
+
+async def run_agent(
     provider: LlmProvider,
     registry: ToolRegistry,
     request: LlmRequest,
-) -> LlmAssistantMessage:
+    *,
+    max_steps: int,
+    max_total_tokens: int,
+    pricing: LlmPricing | None = None,
+    trace: AgentRunTrace,
+) -> AgentRunResult:
+    if max_steps < 1:
+        raise ValueError("max_steps must be at least 1")
+    if max_total_tokens < 1:
+        raise ValueError("max_total_tokens must be at least 1")
+
+    messages: list[LlmContextMessage] = list(request.messages)
+    usage = LlmUsage(input_tokens=0, output_tokens=0)
+
     try:
         async with asyncio.timeout(settings.agent_run_timeout):
-            first_reponse = await provider.complete(replace(request, tools=registry.definitions))
-
-            if first_reponse.tool_call is None:
-                if first_reponse.message is None:
-                    raise LlmProviderError("Language model returned no usable output")
-                return first_reponse.message
-            tool_call = first_reponse.tool_call
-            tool = registry.get(tool_call.name)
-            tool_result = await tool.execute(tool_call)
-
-            second_response = await provider.complete(
-                LlmRequest(
-                    messages=[
-                        *request.messages,
-                        LlmToolCallMessage(tool_call=tool_call),
-                        LlmToolResultMessage(tool_result=tool_result),
-                    ],
-                    tools=(),
+            for step in range(1, max_steps + 1):
+                response = await provider.complete(
+                    LlmRequest(messages=tuple(messages), tools=registry.definitions)
                 )
-            )
 
-            if second_response.tool_call is not None:
-                # TODO: need loop tool
-                raise LlmProviderError("Language model requested another tool in single-tool mode")
-            if second_response.message is None:
-                raise LlmProviderError("Language model returned no final answer")
+                trace.record_model_response(
+                    step=step,
+                    usage=response.usage,
+                )
+                usage = trace.usage
 
-            return second_response.message
+                # 先计算有没有超过预算再调用工具 否则预算已超时仍可能产生副作用
+                if usage.total_tokens > max_total_tokens:
+                    raise AgentTokenBudgetExceededError(
+                        max_total_tokens=max_total_tokens,
+                        input_tokens=usage.input_tokens,
+                        output_tokens=usage.output_tokens,
+                        steps=step,
+                    )
+
+                if response.message is not None:
+                    estimated_cost_usd = (
+                        pricing.estimate_cost(usage) if pricing is not None else None
+                    )
+                    return AgentRunResult(
+                        message=response.message,
+                        steps=step,
+                        usage=usage,
+                        estimated_cost_usd=estimated_cost_usd,
+                    )
+
+                tool_call = response.tool_call
+                if tool_call is None:
+                    raise LlmProviderError("Language model returned no usable output")
+
+                tool = registry.get(tool_call.name)  # 先确定工具是否合法
+
+                if step == max_steps:  # 再判断步数
+                    raise AgentMaxStepsReachedError(max_steps)
+                started_at = datetime.now(UTC)
+                started_monotonic = time.perf_counter()
+
+                try:
+                    tool_result = await tool.execute(tool_call)
+                except asyncio.CancelledError:
+                    trace.record_tool(
+                        call_id=tool_call.id,
+                        tool_name=tool_call.name,
+                        status="failed",
+                        error_code="cancelled",
+                        started_at=started_at,
+                        started_monotonic=started_monotonic,
+                    )
+                    raise
+                except ToolError as exc:
+                    trace.record_tool(
+                        call_id=tool_call.id,
+                        tool_name=tool_call.name,
+                        status="failed",
+                        error_code=exc.code,
+                        started_at=started_at,
+                        started_monotonic=started_monotonic,
+                    )
+                    raise
+                except Exception:
+                    trace.record_tool(
+                        call_id=tool_call.id,
+                        tool_name=tool_call.name,
+                        status="failed",
+                        error_code="tool_execution_error",
+                        started_at=started_at,
+                        started_monotonic=started_monotonic,
+                    )
+                    raise
+                else:
+                    trace.record_tool(
+                        call_id=tool_call.id,
+                        tool_name=tool_call.name,
+                        status=tool_result.status,
+                        error_code=tool_result.error_code,
+                        started_at=started_at,
+                        started_monotonic=started_monotonic,
+                    )
+                messages.append(LlmToolCallMessage(tool_call=tool_call))
+                messages.append(LlmToolResultMessage(tool_result=tool_result))
+        raise AssertionError("agent loop exited without a terminal state")
     except TimeoutError as exc:
         raise LlmTimeoutError("Agent run timed out") from exc

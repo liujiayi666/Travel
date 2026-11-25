@@ -16,7 +16,7 @@ from sqlalchemy.pool import NullPool
 
 from app.agent.contracts import ToolCall, ToolResult
 from app.agent.tools.dependencies import get_tool_registry
-from app.agent.tools.error import (
+from app.agent.tools.errors import (
     ToolExecutionError,
     ToolInvalidArgumentsError,
     ToolNotAllowedError,
@@ -39,6 +39,7 @@ from app.llm.contracts import (
     LlmTextDelta,
     LlmToolCallMessage,
     LlmToolResultMessage,
+    LlmUsage,
 )
 from app.llm.dependencies import get_llm_provider
 from app.llm.errors import LlmProviderError
@@ -49,6 +50,7 @@ FIRST_REPLY = "可以第一天游西湖，第二天去灵隐寺。"
 FOLLOW_UP_CONTENT = "第二天呢？"
 WEATHER_FINAL_REPLY = "杭州当天最高约 19°C，降雨概率 20%。"
 DEGRADED_WEATHER_REPLY = "无法确认该地点的天气，请检查城市名称或补充国家/地区。"
+TEST_USAGE = LlmUsage(input_tokens=10, output_tokens=5)
 
 
 @pytest.fixture
@@ -113,6 +115,8 @@ def make_user(display_name: str) -> User:
 
 
 class FakeConversationProvider:
+    model = "test-model"
+
     def __init__(
         self,
         contents: list[str] | None = None,
@@ -128,7 +132,10 @@ class FakeConversationProvider:
         if self.error is not None:
             raise self.error
         content = self.contents[min(len(self.requests) - 1, len(self.contents) - 1)]
-        return LlmResponse(message=LlmAssistantMessage(content=content))
+        return LlmResponse(
+            message=LlmAssistantMessage(content=content),
+            usage=TEST_USAGE,
+        )
 
     async def stream(self, request: LlmRequest) -> AsyncGenerator[LlmTextDelta, None]:
         self.requests.append(request)
@@ -214,6 +221,8 @@ class FailingTool:
 
 
 class WeatherConversationProvider:
+    model = "test-model"
+
     def __init__(self) -> None:
         self.requests: list[LlmRequest] = []
 
@@ -229,10 +238,12 @@ class WeatherConversationProvider:
                         "start_date": "2026-11-20",
                         "end_date": "2026-11-20",
                     },
-                )
+                ),
+                usage=TEST_USAGE,
             )
         return LlmResponse(
             message=LlmAssistantMessage(content=WEATHER_FINAL_REPLY),
+            usage=TEST_USAGE,
         )
 
     async def stream(self, request: LlmRequest) -> AsyncGenerator[LlmTextDelta, None]:
@@ -253,10 +264,12 @@ class DegradedWeatherProvider(WeatherConversationProvider):
                         "start_date": "2026-11-20",
                         "end_date": "2026-11-20",
                     },
-                )
+                ),
+                usage=TEST_USAGE,
             )
         return LlmResponse(
             message=LlmAssistantMessage(content=DEGRADED_WEATHER_REPLY),
+            usage=TEST_USAGE,
         )
 
 
@@ -273,18 +286,39 @@ class InjectionProvider(WeatherConversationProvider):
                         "start_date": "2026-11-20",
                         "end_date": "2026-11-20",
                     },
-                )
+                ),
+                usage=TEST_USAGE,
             )
         return LlmResponse(
             tool_call=ToolCall(
                 id="call_delete",
                 name="delete_everything",
                 arguments={},
-            )
+            ),
+            usage=TEST_USAGE,
+        )
+
+
+class AlwaysToolProvider(WeatherConversationProvider):
+    async def complete(self, request: LlmRequest) -> LlmResponse:
+        self.requests.append(request)
+        return LlmResponse(
+            tool_call=ToolCall(
+                id=f"call_weather_{len(self.requests)}",
+                name="get_weather",
+                arguments={
+                    "destination": "Hangzhou",
+                    "start_date": "2026-11-20",
+                    "end_date": "2026-11-20",
+                },
+            ),
+            usage=TEST_USAGE,
         )
 
 
 class FakeStreamingConversationProvider:
+    model = "test-model"
+
     def __init__(
         self,
         contents: list[str],
@@ -308,6 +342,8 @@ class FakeStreamingConversationProvider:
 
 
 class BlockingConversationProvider:
+    model = "test-model"
+
     def __init__(self) -> None:
         self.requests: list[LlmRequest] = []
         self.started = asyncio.Event()
@@ -317,7 +353,10 @@ class BlockingConversationProvider:
         self.requests.append(request)
         self.started.set()
         await self.release.wait()
-        return LlmResponse(message=LlmAssistantMessage(content=FIRST_REPLY))
+        return LlmResponse(
+            message=LlmAssistantMessage(content=FIRST_REPLY),
+            usage=TEST_USAGE,
+        )
 
     async def stream(self, request: LlmRequest) -> AsyncGenerator[LlmTextDelta, None]:
         raise AssertionError("Concurrent-send test must use complete()")
@@ -325,6 +364,8 @@ class BlockingConversationProvider:
 
 
 class TakeoverStreamingProvider:
+    model = "test-model"
+
     def __init__(self) -> None:
         self.requests: list[LlmRequest] = []
         self.started = asyncio.Event()
@@ -371,6 +412,19 @@ def text_message_pairs(
     return pairs
 
 
+def assert_error_payload_with_run_id(
+    response,
+    expected: dict[str, object],
+) -> str:
+    payload = response.json()
+    run_id = payload.pop("runId")
+    assert isinstance(run_id, str)
+    uuid.UUID(run_id)
+    assert response.headers["X-Agent-Run-Id"] == run_id
+    assert payload == expected
+    return run_id
+
+
 async def persist_user(
     session_factory: async_sessionmaker[AsyncSession],
     display_name: str,
@@ -391,6 +445,7 @@ async def persist_user(
         ("POST", "/api/conversations"),
         ("POST", f"/api/conversations/{uuid.uuid4()}/messages"),
         ("POST", f"/api/conversations/{uuid.uuid4()}/messages/stream"),
+        ("GET", f"/api/runs/{uuid.uuid4()}"),
     ],
 )
 async def test_conversation_api_requires_authentication(
@@ -409,6 +464,22 @@ async def test_conversation_api_requires_authentication(
 
     assert response.status_code == 401
     assert response.json() == {"detail": "Unauthorized"}
+
+
+@pytest.mark.anyio
+async def test_legacy_chat_route_is_removed(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    user_id = await persist_user(session_factory, "Legacy route removal")
+
+    async with make_client(session_factory, user_id=user_id) as client:
+        response = await client.post(
+            "/api/chat",
+            json={"message": FIRST_MESSAGE},
+            headers={"Origin": settings.frontend_origin},
+        )
+
+    assert response.status_code == 404
 
 
 @pytest.mark.anyio
@@ -896,7 +967,9 @@ async def test_send_message_returns_only_new_assistant_reply(
 
     assert first_send.status_code == 200
     assert second_send.status_code == 200
-    assert second_send.json() == {
+    second_send_payload = second_send.json()
+    uuid.UUID(second_send_payload.pop("run_id"))
+    assert second_send_payload == {
         "message": {
             "role": "assistant",
             "content": follow_up_reply,
@@ -950,7 +1023,7 @@ async def test_send_message_executes_weather_tool_and_persists_final_exchange(
     assert len(provider.requests) == 2
     assert len(weather_tool.calls) == 1
     assert provider.requests[0].tools == (WEATHER_DEFINITION,)
-    assert provider.requests[1].tools == ()
+    assert provider.requests[1].tools == (WEATHER_DEFINITION,)
     assert isinstance(provider.requests[1].messages[-2], LlmToolCallMessage)
     assert isinstance(provider.requests[1].messages[-1], LlmToolResultMessage)
     assert weather_tool.calls[0].id == "call_weather_1"
@@ -958,6 +1031,215 @@ async def test_send_message_executes_weather_tool_and_persists_final_exchange(
         ("user", "杭州 11 月 20 日天气怎么样？"),
         ("assistant", WEATHER_FINAL_REPLY),
     ]
+
+
+@pytest.mark.anyio
+async def test_agent_run_api_returns_owner_visible_trace(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    user_id = await persist_user(session_factory, "Run trace owner")
+    provider = WeatherConversationProvider()
+    weather_tool = FakeWeatherTool()
+
+    async with session_factory() as session:
+        conversation = Conversation(user_id=user_id, title="Run trace")
+        session.add(conversation)
+        await session.commit()
+        conversation_id = conversation.id
+
+    async with make_client(
+        session_factory,
+        user_id=user_id,
+        provider=provider,
+        tool_registry=ToolRegistry([weather_tool]),
+    ) as client:
+        send_response = await client.post(
+            f"/api/conversations/{conversation_id}/messages",
+            json={"content": "杭州 11 月 20 日天气怎么样？"},
+            headers={"Origin": settings.frontend_origin},
+        )
+        run_id = send_response.json()["run_id"]
+        run_response = await client.get(f"/api/runs/{run_id}")
+
+    assert send_response.status_code == 200
+    assert run_response.status_code == 200
+    body = run_response.json()
+    assert body == {
+        "run_id": run_id,
+        "conversation_id": str(conversation_id),
+        "status": "completed",
+        "provider_name": settings.llm_provider,
+        "model": "test-model",
+        "failure_code": None,
+        "started_at": body["started_at"],
+        "finished_at": body["finished_at"],
+        "duration_ms": body["duration_ms"],
+        "steps": 2,
+        "input_tokens": 20,
+        "output_tokens": 10,
+        "estimated_cost_usd": None,
+        "tool_calls": [
+            {
+                "sequence": 1,
+                "tool_name": "get_weather",
+                "status": "success",
+                "error_code": None,
+                "started_at": body["tool_calls"][0]["started_at"],
+                "finished_at": body["tool_calls"][0]["finished_at"],
+                "duration_ms": body["tool_calls"][0]["duration_ms"],
+            }
+        ],
+    }
+    assert body["finished_at"] is not None
+    assert body["duration_ms"] >= 0
+    assert body["tool_calls"][0]["duration_ms"] >= 0
+    assert "content" not in run_response.text
+
+
+@pytest.mark.anyio
+async def test_agent_run_api_hides_foreign_and_missing_runs(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    owner_id = await persist_user(session_factory, "Run trace owner")
+    attacker_id = await persist_user(session_factory, "Run trace attacker")
+    provider = FakeConversationProvider()
+
+    async with session_factory() as session:
+        conversation = Conversation(user_id=owner_id, title="Private run")
+        session.add(conversation)
+        await session.commit()
+        conversation_id = conversation.id
+
+    async with make_client(
+        session_factory,
+        user_id=owner_id,
+        provider=provider,
+    ) as owner_client:
+        send_response = await owner_client.post(
+            f"/api/conversations/{conversation_id}/messages",
+            json={"content": FIRST_MESSAGE},
+            headers={"Origin": settings.frontend_origin},
+        )
+        run_id = send_response.json()["run_id"]
+
+    async with make_client(
+        session_factory,
+        user_id=attacker_id,
+    ) as attacker_client:
+        foreign_response = await attacker_client.get(f"/api/runs/{run_id}")
+        missing_response = await attacker_client.get(f"/api/runs/{uuid.uuid4()}")
+
+    assert send_response.status_code == 200
+    assert foreign_response.status_code == 404
+    assert foreign_response.json() == {"detail": "Agent run not found"}
+    assert missing_response.status_code == 404
+    assert missing_response.json() == foreign_response.json()
+
+
+@pytest.mark.anyio
+async def test_agent_max_steps_returns_stable_error_without_partial_persistence(
+    session_factory: async_sessionmaker[AsyncSession],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    user_id = await persist_user(session_factory, "Max steps")
+    provider = AlwaysToolProvider()
+    weather_tool = FakeWeatherTool()
+    monkeypatch.setattr(settings, "agent_max_steps", 2)
+
+    async with session_factory() as session:
+        conversation = Conversation(user_id=user_id, title="Max steps")
+        session.add(conversation)
+        await session.commit()
+        conversation_id = conversation.id
+
+    async with make_client(
+        session_factory,
+        user_id=user_id,
+        provider=provider,
+        tool_registry=ToolRegistry([weather_tool]),
+    ) as client:
+        response = await client.post(
+            f"/api/conversations/{conversation_id}/messages",
+            json={"content": "一直查询天气"},
+            headers={"Origin": settings.frontend_origin},
+        )
+        history_response = await client.get(
+            f"/api/conversations/{conversation_id}/messages",
+        )
+
+    assert response.status_code == 502
+    assert_error_payload_with_run_id(
+        response,
+        {
+            "code": "agent_max_steps_reached",
+            "detail": "The agent could not finish within its allowed steps.",
+        },
+    )
+    assert history_response.json() == []
+    assert len(provider.requests) == 2
+    assert len(weather_tool.calls) == 1
+
+    async with session_factory() as session:
+        conversation = await session.scalar(
+            select(Conversation).where(Conversation.id == conversation_id)
+        )
+
+    assert conversation is not None
+    assert conversation.processing_token is None
+    assert conversation.processing_expires_at is None
+
+
+@pytest.mark.anyio
+async def test_agent_token_budget_returns_stable_error_without_partial_persistence(
+    session_factory: async_sessionmaker[AsyncSession],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    user_id = await persist_user(session_factory, "Token budget")
+    provider = AlwaysToolProvider()
+    weather_tool = FakeWeatherTool()
+    monkeypatch.setattr(settings, "agent_max_total_tokens", 20)
+
+    async with session_factory() as session:
+        conversation = Conversation(user_id=user_id, title="Token budget")
+        session.add(conversation)
+        await session.commit()
+        conversation_id = conversation.id
+
+    async with make_client(
+        session_factory,
+        user_id=user_id,
+        provider=provider,
+        tool_registry=ToolRegistry([weather_tool]),
+    ) as client:
+        response = await client.post(
+            f"/api/conversations/{conversation_id}/messages",
+            json={"content": "持续查询天气"},
+            headers={"Origin": settings.frontend_origin},
+        )
+        history_response = await client.get(
+            f"/api/conversations/{conversation_id}/messages",
+        )
+
+    assert response.status_code == 502
+    assert_error_payload_with_run_id(
+        response,
+        {
+            "code": "agent_token_budget_exceeded",
+            "detail": "The agent exceeded its token budget.",
+        },
+    )
+    assert history_response.json() == []
+    assert len(provider.requests) == 2
+    assert len(weather_tool.calls) == 1
+
+    async with session_factory() as session:
+        conversation = await session.scalar(
+            select(Conversation).where(Conversation.id == conversation_id)
+        )
+
+    assert conversation is not None
+    assert conversation.processing_token is None
+    assert conversation.processing_expires_at is None
 
 
 @pytest.mark.anyio
@@ -1043,10 +1325,16 @@ async def test_tool_result_injection_cannot_execute_second_tool_or_persist_messa
         )
 
     assert response.status_code == 502
-    assert response.json()["code"] == "llm_provider_error"
+    assert_error_payload_with_run_id(
+        response,
+        {
+            "code": "tool_not_allowed",
+            "detail": "The requested tool is not available.",
+        },
+    )
     assert history_response.json() == []
     assert len(provider.requests) == 2
-    assert provider.requests[1].tools == ()
+    assert provider.requests[1].tools == (WEATHER_DEFINITION,)
     assert len(weather_tool.calls) == 1
 
     tool_result_message = provider.requests[1].messages[-1]
@@ -1140,10 +1428,13 @@ async def test_tool_failures_return_stable_errors_without_partial_persistence(
             )
 
     assert response.status_code == expected_status
-    assert response.json() == {
-        "code": expected_code,
-        "detail": expected_detail,
-    }
+    assert_error_payload_with_run_id(
+        response,
+        {
+            "code": expected_code,
+            "detail": expected_detail,
+        },
+    )
     assert history_response.json() == []
     assert len(provider.requests) == 1
     assert failing_tool is None or len(failing_tool.calls) == 1
@@ -1302,13 +1593,19 @@ async def test_first_message_provider_failure_leaves_no_partial_exchange(
             json={"content": FIRST_MESSAGE},
             headers={"Origin": settings.frontend_origin},
         )
+        run_id = response.json()["runId"]
+        run_response = await client.get(f"/api/runs/{run_id}")
         history_response = await client.get(
             f"/api/conversations/{conversation_id}/messages",
         )
         conversations_response = await client.get("/api/conversations")
 
     assert response.status_code == 502
+    assert response.headers["X-Agent-Run-Id"] == run_id
     assert create_response.status_code == 201
+    assert run_response.status_code == 200
+    assert run_response.json()["status"] == "failed"
+    assert run_response.json()["failure_code"] == "llm_provider_error"
     assert history_response.json() == []
     assert conversations_response.json()[0]["title"] == FIRST_MESSAGE
 

@@ -293,6 +293,44 @@
       </ul>
       <blockquote>Prompt 只降低注入成功率，权限边界必须由 allowlist、单轮 <code>tools=()</code>、服务端身份和结构化错误结果保证；外部数据保持低信任 role，并用有界 Schema、来源 metadata 和 eval 约束最终回答。</blockquote>
     </article>
+    <article class="cp">
+      <header><span class="id">038d9a9</span><time>2026-11-18</time><h2>A10.1 受控多步 Agent Loop</h2></header>
+      <ul>
+        <li><code>max_steps</code> 表示最多多少次 LLM 决策，不是工具执行次数；直接回答消耗 1 步，每次工具提议也消耗 1 步</li>
+        <li>循环每轮都重新提供 Registry allowlist，并把上一轮 assistant ToolCall 与 tool ToolResult 按顺序加入下一轮上下文</li>
+        <li>最后一次允许的 LLM 决策仍提议工具时，先校验工具是否在白名单；合法工具也不执行，未知工具仍返回 <code>ToolNotAllowedError</code></li>
+        <li>AgentRun 总 deadline 映射为 <code>LlmTimeoutError</code>；<code>CancelledError</code> 不被吞掉，穿过 Orchestrator 后由 <code>send_message()</code> 的 shield <code>finally</code> 释放 Conversation lease</li>
+        <li>只有完整最终回答才会进入 <code>_persist_exchange()</code>；失败、取消和 <code>max_steps_reached</code> 都不会留下 user/assistant 半轮 Message</li>
+        <li>证据：Agent loop/API targeted pytest 通过；提交钩子中后端 Ruff/format、前端 20 files / 86 tests 和 production build 全部通过</li>
+      </ul>
+      <blockquote>用服务端有界状态机限制模型决策次数，并把 allowlist、步数上限、deadline、取消和 lease 清理放在各自正确边界；循环能力增长时不牺牲终止确定性与无半轮持久化。</blockquote>
+    </article>
+    <article class="cp">
+      <header><span class="id">a3ddfd4</span><time>2026-11-19</time><h2>A10.2 Usage、Token 预算与成本</h2></header>
+      <ul>
+        <li>非流式 Provider 将供应商 <code>prompt_tokens</code>/<code>completion_tokens</code> 归一化为应用自己的 <code>LlmUsage</code>；缺失或非法 usage 直接作为 Provider 契约错误终止</li>
+        <li>AgentLoop 按每一轮调用累计 input/output token；历史会在每轮重复发送，因此不能只统计最后一次请求的 prompt token</li>
+        <li>预算检查顺序固定为“累计 usage → 判断 Run 预算 → 执行工具或返回最终回答”；超限响应的 ToolCall 不执行，避免额外成本和无法收尾的副作用</li>
+        <li>成本按服务端配置的每百万 input/output token 价格计算；价格必须成对配置，未知价格记录为 <code>None</code> 而不是 0</li>
+        <li>超限抛出 <code>AgentTokenBudgetExceededError</code>，API 稳定映射为 <code>agent_token_budget_exceeded</code>；Conversation Service 不进入持久化，仍通过 shield <code>finally</code> 释放 lease</li>
+        <li>测试覆盖重复 input 累计、工具前超限、最终回答超限、成本计算、缺失/非法 usage、价格成对校验，以及 API 超限后无半轮 Message</li>
+        <li>证据：完整 backend pytest 与 Ruff 通过；提交钩子中后端 format/lint、前端 20 files / 86 tests 和 production build 全部通过</li>
+      </ul>
+      <blockquote>把供应商 usage 归一化后在服务端累计整个 Run 的 token，并在任何工具或最终结果被采用前执行预算判断；未知 usage fail closed、未知价格保持 None，才能让金额边界真实而不是表面上有上限。</blockquote>
+    </article>
+    <article class="cp">
+      <header><span class="id">9c9f88e · e8715a6</span><time>2026-11-25</time><h2>A10.3 AgentRun / ToolCall Trace 与失败定位</h2></header>
+      <ul>
+        <li>AgentRun 属于 Conversation，并在 Provider 调用前以 running 状态提交；成功时再关联本轮 user/assistant Message，失败或取消 Run 可以没有 Message</li>
+        <li>Service 持有并传入同一个 <code>AgentRunTrace</code>；Orchestrator 逐轮累计 usage，并记录每次真实工具执行的 sequence、call_id、状态和耗时</li>
+        <li>成功路径把两条 Message、Run completed 和 ToolCall 放进一个事务；失败、取消和 max steps 只提交 Run 终态与已执行工具，不保存半轮 exchange</li>
+        <li>trace helper 保持 transaction-neutral，只执行 UPDATE/INSERT 和 flush；由 Conversation Service 外层统一 commit/rollback，避免 helper 意外提交或撤销调用方工作</li>
+        <li>成功响应返回 <code>run_id</code>；失败异常携带已创建 runId，error handler 同时写入响应 body 和 <code>X-Agent-Run-Id</code>，因此 502/504 也能定位</li>
+        <li><code>GET /api/runs/{runId}</code> 同时校验 Run 用户与 Conversation owner，缺失和越权统一 404；只返回状态、耗时、usage、成本、failure code 和 ToolCall 摘要</li>
+        <li>测试覆盖成功原子交换、Provider 失败、max steps、token budget、取消、caller-owned transaction、owner 查询和跨用户 404；证据为 backend 189、frontend 84 tests 与全量质量门禁</li>
+      </ul>
+      <blockquote>把运行状态与工具摘要持久化为 Conversation 下的事实，用服务端 runId 串联成功和失败路径；以事务一致性保证 Message/Run 不分裂，以 owner-scoped 白名单查询提供安全可追溯的 Agent 排障能力。</blockquote>
+    </article>
   </div>
 </div>
 </body>

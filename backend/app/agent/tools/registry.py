@@ -2,7 +2,7 @@ from collections.abc import Iterable
 
 from app.agent.contracts import ToolDefinition
 from app.agent.tools.base import Tool
-from app.agent.tools.error import ToolNotAllowedError
+from app.agent.tools.errors import ToolNotAllowedError
 
 
 class ToolRegistry:
