@@ -52,6 +52,7 @@
 | 24 | 2026-11-18 | 完成 A9.3 验收：Prompt Injection 信任边界、外部字段约束、provenance 与 grounded smoke；PR #29 合并为 `b717cf2` |
 | 25 | 2026-11-18 | 完成 A10.1 验收：受控多步 Agent loop、allowlist 与 max_steps 终止顺序、稳定超限映射和取消/lease 边界；commit `038d9a9` |
 | 26 | 2026-11-19 | 完成 A10.2 验收：Provider usage 归一化、累计 token 预算、成本估算、超限前置终止与稳定错误映射；commit `a3ddfd4` |
+| 27 | 2026-11-25 | 完成 A10.3 验收：AgentRun/ToolCall 持久化、全终态生命周期、失败 runId 和 owner-scoped trace 查询；commits `9c9f88e`、`e8715a6` |
 
 ## 易错本
 
@@ -130,6 +131,11 @@
 - Agent 多步 input token 会因每轮重复发送历史而重复计费，必须累计所有模型调用；只检查最后一次 usage 会低估成本并绕过预算
 - Token 预算必须在收到响应后、执行该响应提议的工具前检查；否则已超限的 Run 仍可能产生额外成本和不可撤销副作用
 - 成本价格必须 input/output 成对配置；无法配置时记录 `None`。当前响应可能让 Run 有一次由 `max_tokens` 限制的有界超额，不能宣称本地字符估算可精确预检 token
+- AgentRun 属于 Conversation，不属于 Message；Run 在 Message 之前创建，失败和取消 Run 可以没有 Message
+- trace helper 应 transaction-neutral：只 UPDATE/INSERT + flush，不自行 commit/rollback；由 Conversation Service 决定事务边界
+- 失败响应必须携带已创建 Run 的 `runId` 和 `X-Agent-Run-Id`，否则用户只能通过数据库或服务端日志猜定位键
+- Trace 只保存状态、usage、成本和 ToolCall 摘要；不保存 Prompt、回答正文、工具参数/结果正文、Cookie 或 lease
+- `GET /api/runs/{runId}` 必须同时校验当前用户与 Conversation owner；不存在和非 owner 统一 404，UUID 不是授权机制
 - Prompt 不是权限边界；即使模型被工具文本诱导，服务端仍靠工具 allowlist、`tools=()` 和当前 Session 身份限制可执行动作
 - Schema 只约束结构和类型，并丢弃未声明字段，不能“净化”允许字段中的恶意自然语言；ToolResult 必须保持低信任 `tool` role
 - “地点找不到/无预报”是预期领域结果，应转 `ToolResult(status="error")` 并由第二次 LLM 安全降级；工具/Provider 故障才走 502/504 且不落库
@@ -500,7 +506,7 @@
 - 学到：预算检查顺序是“累计 usage → 判断预算 → 工具/最终回答”。超限后当前 ToolCall 不执行、Run 不返回、Message 不持久化，但 lease 仍由 Service `finally` 释放。
 - 面试向：我把真实供应商 usage 转成应用 DTO，按每轮实际计费累计整个 AgentRun 的 input/output token，在执行工具前关停超预算运行，并用可选服务端价格计算成本；未知 usage fail closed，未知价格保持 `None`，避免用字符估算或 0 成本制造虚假的预算安全感。
 
-#### A10.3 AgentRun / ToolCall Trace 与成本可见性
+#### A10.3 AgentRun / ToolCall Trace 与成本可见性 — ✓ 2026-11-25（commits `9c9f88e`、`e8715a6`）
 
 - 训练能力：让成功与失败运行都能回答“做了什么、花了多久、花了多少 token、为什么停止”，并保持 trace 与权威业务状态一致。
 - 数据边界：持久化 AgentRun 的用户归属、Conversation、终态、模型、起止时间、总耗时、token 汇总、成本与稳定失败原因；ToolCall 记录工具名、状态、耗时和稳定错误码。默认不保存完整 Prompt、密钥、Cookie 或外部正文。
@@ -509,6 +515,15 @@
 - 可运行 failure path：Provider timeout、达到步数上限和取消都留下 failed/cancelled/max_steps_reached 终态，不残留永久 running。
 - 可观察证据：真实 PostgreSQL 集成测试覆盖正常、失败和终态唯一迁移；结构化日志只含内部 ID、模型、工具名、耗时、usage 和错误码。
 - 明确不做：接入第三方 tracing 平台、完整 Prompt 归档和面向终端用户的复杂观测页面。
+
+- 验收通过：完整 backend 189 passed；前端 20 files / 84 tests；Ruff check/format、Oxlint、production build 和提交钩子全部通过。
+- 可复查测试：`test_send_message_completes_run_and_persists_exchange_atomically`、`test_send_message_failure_persists_run_and_no_messages`、`test_send_message_records_max_steps_without_executing_last_tool`、`test_send_message_records_token_budget_failure`、`test_send_message_cancellation_records_terminal_run`、`test_failed_run_helper_does_not_rollback_caller_transaction`、`test_agent_run_api_returns_owner_visible_trace`、`test_agent_run_api_hides_foreign_and_missing_runs`。
+- 关键代码：`backend/app/agent/models.py`、`trace.py`、`trace_service.py`、`orchestrator.py`、`presenter.py`、`router.py` 与 `backend/app/conversations/service.py`；migration `d98af881e896`。
+- 学到：成功时 Message、Run completed 和 ToolCall 必须同事务；失败/取消/max steps 只保存 Run/ToolCall，不保存半轮 Message。
+- 学到：AgentRunTrace 是 Service 持有并传给 Orchestrator 的可变收集器；成功和异常路径读取同一实例，终态时物化为数据库记录。
+- 学到：失败异常携带已创建 runId，LLM/Tool/Conversation/Agent error handler 统一把它写入响应 body 和 `X-Agent-Run-Id`，使 502/504 也可直接查询 trace。
+- 学到：查询 API 用 Run + Conversation owner 双条件过滤，缺失和越权同返 404；响应只暴露白名单元数据，不包含 Prompt、Message 或工具正文。
+- 面试向：我用 PostgreSQL 保存 AgentRun 状态和 ToolCall span 摘要，把成功 exchange 原子化、失败终态独立持久化，并让成功/失败都用服务端 runId 关联可观测数据；查询接口再通过 owner-scoped 404 和字段白名单提供安全可追溯的 Agent 排障能力。
 
 #### A10.4 固定 Agent Eval 回归集
 
@@ -553,7 +568,7 @@
 
 ## 下一步
 
-下一步进入 A10.3：建立 AgentRun / ToolCall 持久化 trace，把已完成运行的终态、耗时、steps、token、成本和稳定失败原因与 Conversation fencing 语义连接起来。
+下一步进入 A10.4：建立固定 Agent Eval 回归集，用 fake Provider、fake Tool 和确定性断言覆盖正常、工具失败、非法参数、批量/并行工具已知限制、上限、Provider 失败、取消、注入和 groundedness。
 
 后续顺序：
 
@@ -569,7 +584,7 @@
 10. A9.1：ToolCall / ToolResult 契约与天气 happy path — ✓
 11. A9.2：非法参数与工具故障 — ✓
 12. A9.3：Prompt Injection 与 groundedness — ✓
-13. A10：Agent Loop、限额、Trace 与 Eval — 进行中（A10.1、A10.2 ✓）
+13. A10：Agent Loop、限额、Trace 与 Eval — 进行中（A10.1—A10.3 ✓）
 14. A7.4.1：Runtime 一致性收尾 — 暂缓
 15. A11：RAG 知识检索工具
 16. A12：Conversation 历史治理与高级压缩

@@ -318,6 +318,19 @@
       </ul>
       <blockquote>把供应商 usage 归一化后在服务端累计整个 Run 的 token，并在任何工具或最终结果被采用前执行预算判断；未知 usage fail closed、未知价格保持 None，才能让金额边界真实而不是表面上有上限。</blockquote>
     </article>
+    <article class="cp">
+      <header><span class="id">9c9f88e · e8715a6</span><time>2026-11-25</time><h2>A10.3 AgentRun / ToolCall Trace 与失败定位</h2></header>
+      <ul>
+        <li>AgentRun 属于 Conversation，并在 Provider 调用前以 running 状态提交；成功时再关联本轮 user/assistant Message，失败或取消 Run 可以没有 Message</li>
+        <li>Service 持有并传入同一个 <code>AgentRunTrace</code>；Orchestrator 逐轮累计 usage，并记录每次真实工具执行的 sequence、call_id、状态和耗时</li>
+        <li>成功路径把两条 Message、Run completed 和 ToolCall 放进一个事务；失败、取消和 max steps 只提交 Run 终态与已执行工具，不保存半轮 exchange</li>
+        <li>trace helper 保持 transaction-neutral，只执行 UPDATE/INSERT 和 flush；由 Conversation Service 外层统一 commit/rollback，避免 helper 意外提交或撤销调用方工作</li>
+        <li>成功响应返回 <code>run_id</code>；失败异常携带已创建 runId，error handler 同时写入响应 body 和 <code>X-Agent-Run-Id</code>，因此 502/504 也能定位</li>
+        <li><code>GET /api/runs/{runId}</code> 同时校验 Run 用户与 Conversation owner，缺失和越权统一 404；只返回状态、耗时、usage、成本、failure code 和 ToolCall 摘要</li>
+        <li>测试覆盖成功原子交换、Provider 失败、max steps、token budget、取消、caller-owned transaction、owner 查询和跨用户 404；证据为 backend 189、frontend 84 tests 与全量质量门禁</li>
+      </ul>
+      <blockquote>把运行状态与工具摘要持久化为 Conversation 下的事实，用服务端 runId 串联成功和失败路径；以事务一致性保证 Message/Run 不分裂，以 owner-scoped 白名单查询提供安全可追溯的 Agent 排障能力。</blockquote>
+    </article>
   </div>
 </div>
 </body>
