@@ -11,6 +11,9 @@ describe("chatRuntimeStore", () => {
     const store = useChatRuntimeStore.getState();
     const runId = store.enqueueNewChat("杭州玩两天");
 
+    expect(runId).toMatch(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
+    );
     expect(useChatRuntimeStore.getState().runsById[runId]).toMatchObject({
       conversationId: null,
       phase: "creating-conversation",
