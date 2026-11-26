@@ -203,6 +203,16 @@ FastAPI 和 PostgreSQL 只在 Docker 内部网络可达，不直接暴露公网�
      启动 API/edge 并等待健康检查；
    - 该模式没有 HTTPS、Secure Cookie 和自动证书，不能保存真实敏感数据。
 
+   如果服务器无法稳定访问 GHCR，可以在本机拉取并校验官方镜像，通过 SSH
+   执行 `docker load` 后使用：
+
+   ```bash
+   SKIP_IMAGE_PULL=1 bash deploy/release.sh
+   ```
+
+   该选项仍要求 `.env` 指向本地已存在的不可变 SHA 镜像，不能借此部署
+   浮动 tag 或来源不明的镜像。
+
    获得域名后，改回 `APP_ENV=production`、HTTPS 域名和 `80/443`，
    再重新部署。
 

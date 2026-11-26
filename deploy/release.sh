@@ -47,8 +47,15 @@ echo "Creating database backup: $backup_file"
 "${compose[@]}" exec -T db \
   pg_dump -U "$postgres_user" -d "$postgres_db" -Fc > "$backup_file"
 
-echo "Pulling pinned images"
-"${compose[@]}" pull api edge
+if [[ "${SKIP_IMAGE_PULL:-0}" == "1" ]]; then
+  echo "Skipping registry pull; using locally loaded images"
+else
+  echo "Pulling pinned images"
+  "${compose[@]}" pull api edge
+fi
+
+docker image inspect "$api_image" >/dev/null
+docker image inspect "$edge_image" >/dev/null
 
 echo "Applying database migrations"
 "${compose[@]}" run --rm migrate
