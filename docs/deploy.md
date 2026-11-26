@@ -129,6 +129,10 @@ FastAPI 和 PostgreSQL 只在 Docker 内部网络可达，不直接暴露公网�
    bash deploy/up.sh
    ```
 
+   `deploy/up.sh` 只用于本地 dev 构建和启动：它会先构建 API 与 edge
+   镜像，再按 `db → migrate → api → edge` 的顺序启动。服务器部署必须使用
+   CI 发布的固定镜像并执行 `pull`，不能运行本地构建脚本。
+
 6. **D5 接入 Caddy**
 
    Caddy 负责：

@@ -65,9 +65,6 @@ services:
 
   edge:
     image: ${TRAVEL_EDGE_IMAGE:-travel-edge:dev}
-    build:
-      context: ..
-      dockerfile: deploy/frontend.Dockerfile
     restart: unless-stopped
     environment:
       FRONTEND_ORIGIN: ${FRONTEND_ORIGIN:?FRONTEND_ORIGIN must be set}
