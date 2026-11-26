@@ -22,3 +22,4 @@ deploy/env/*.env
 # misc
 .DS_Store
 *.log
+backups/

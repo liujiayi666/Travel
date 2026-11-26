@@ -69,8 +69,8 @@ FastAPI 和 PostgreSQL 只在 Docker 内部网络可达，不直接暴露公网�
 服务器文件建议放在：
 
 ```text
-/opt/travel/dev/.env
-/opt/travel/prod/.env
+/opt/travel/dev/app/.env
+/opt/travel/prod/app/.env
 ```
 
 文件权限设为 `600`。真实 `.env` 已被 `.gitignore` 排除。
@@ -192,6 +192,38 @@ FastAPI 和 PostgreSQL 只在 Docker 内部网络可达，不直接暴露公网�
 9. **D8 部署线上 dev**
 
    配置服务器、SSH、防火墙、DNS 和 Caddy。公网只开放 `22/80/443`。
+
+   没有域名时，可以先做临时 IP preview：
+
+   - 防火墙只对测试来源开放 `22/80`，不要暴露 `5432/8000`；
+   - 使用 `deploy/env/ip-preview.env.example`，设置
+     `APP_ENV=development` 和 `FRONTEND_ORIGIN=http://服务器IP`；
+   - 使用 GHCR 的 `sha-*` 镜像，不在服务器上构建；
+   - `bash deploy/release.sh` 会先备份数据库，再拉取镜像、执行迁移、
+     启动 API/edge 并等待健康检查；
+   - 该模式没有 HTTPS、Secure Cookie 和自动证书，不能保存真实敏感数据。
+
+   如果服务器无法稳定访问 GHCR，可以在本机拉取并校验官方镜像，通过 SSH
+   执行 `docker load` 后使用：
+
+   ```bash
+   SKIP_IMAGE_PULL=1 bash deploy/release.sh
+   ```
+
+   该选项仍要求 `.env` 指向本地已存在的不可变 SHA 镜像，不能借此部署
+   浮动 tag 或来源不明的镜像。
+
+   获得域名后，改回 `APP_ENV=production`、HTTPS 域名和 `80/443`，
+   再重新部署。
+
+   自动 dev 部署需要：
+
+   - GitHub Variables：`DEPLOY_HOST`、`DEPLOY_USER`、`DEPLOY_KNOWN_HOSTS`、
+     `DEPLOY_PUBLIC_URL`，可选 `DEPLOY_PORT`、`DEPLOY_PATH`；
+   - GitHub Secrets：`DEPLOY_SSH_KEY`；
+   - GitHub Runner 从 GHCR 拉取固定 SHA 镜像，再通过 SSH 压缩传输并由
+     服务器 `docker load`，避免服务器直接访问 GHCR；
+   - dev deploy job 随后更新 `.env`、备份数据库、迁移和健康检查。
 
 10. **D9 部署线上 prod**
 

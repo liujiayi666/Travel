@@ -129,3 +129,110 @@ jobs:
             echo '${{ steps.meta.outputs.tags }}'
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
+
+  deploy-dev:
+    name: Deploy dev
+    needs:
+      - quality
+      - metadata
+      - images
+    if: needs.metadata.outputs.environment == 'dev'
+    runs-on: ubuntu-latest
+    environment:
+      name: dev
+      url: ${{ vars.DEPLOY_PUBLIC_URL }}
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      packages: read
+    concurrency:
+      group: deploy-dev
+      cancel-in-progress: false
+    steps:
+      - name: Prepare SSH credentials
+        shell: bash
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_KNOWN_HOSTS: ${{ vars.DEPLOY_KNOWN_HOSTS }}
+        run: |
+          install -d -m 700 "$RUNNER_TEMP/ssh"
+          printf '%s\n' "$DEPLOY_SSH_KEY" > "$RUNNER_TEMP/ssh/deploy_key"
+          printf '%s\n' "$DEPLOY_KNOWN_HOSTS" > "$RUNNER_TEMP/ssh/known_hosts"
+          chmod 600 "$RUNNER_TEMP/ssh/deploy_key"
+          chmod 600 "$RUNNER_TEMP/ssh/known_hosts"
+
+      - name: Deploy pinned images
+        shell: bash
+        env:
+          DEPLOY_HOST: ${{ vars.DEPLOY_HOST }}
+          DEPLOY_PORT: ${{ vars.DEPLOY_PORT || '22' }}
+          DEPLOY_USER: ${{ vars.DEPLOY_USER }}
+          GHCR_IMAGE_PREFIX: ghcr.io/${{ needs.metadata.outputs.image_owner }}
+          IMAGE_SHA: ${{ github.sha }}
+        run: |
+          printf '%s' "${{ secrets.GITHUB_TOKEN }}" \
+            | docker login ghcr.io \
+                --username "${{ github.actor }}" \
+                --password-stdin
+
+          docker pull "${GHCR_IMAGE_PREFIX}/travel-api:sha-${IMAGE_SHA}"
+          docker pull "${GHCR_IMAGE_PREFIX}/travel-edge:sha-${IMAGE_SHA}"
+
+          docker save \
+            "${GHCR_IMAGE_PREFIX}/travel-api:sha-${IMAGE_SHA}" \
+            "${GHCR_IMAGE_PREFIX}/travel-edge:sha-${IMAGE_SHA}" \
+            | gzip -1 \
+            | ssh \
+                -i "$RUNNER_TEMP/ssh/deploy_key" \
+                -p "$DEPLOY_PORT" \
+                -o IdentitiesOnly=yes \
+                -o StrictHostKeyChecking=yes \
+                -o UserKnownHostsFile="$RUNNER_TEMP/ssh/known_hosts" \
+                "$DEPLOY_USER@$DEPLOY_HOST" \
+                'gunzip | docker load'
+
+      - name: Apply deployment
+        shell: bash
+        env:
+          DEPLOY_HOST: ${{ vars.DEPLOY_HOST }}
+          DEPLOY_PORT: ${{ vars.DEPLOY_PORT || '22' }}
+          DEPLOY_USER: ${{ vars.DEPLOY_USER }}
+          DEPLOY_PATH: ${{ vars.DEPLOY_PATH || '/opt/travel/dev/app' }}
+          DEPLOY_PUBLIC_URL: ${{ vars.DEPLOY_PUBLIC_URL }}
+          GHCR_IMAGE_PREFIX: ghcr.io/${{ needs.metadata.outputs.image_owner }}
+          IMAGE_SHA: ${{ github.sha }}
+        run: |
+          ssh \
+            -i "$RUNNER_TEMP/ssh/deploy_key" \
+            -p "$DEPLOY_PORT" \
+            -o IdentitiesOnly=yes \
+            -o StrictHostKeyChecking=yes \
+            -o UserKnownHostsFile="$RUNNER_TEMP/ssh/known_hosts" \
+            "$DEPLOY_USER@$DEPLOY_HOST" \
+            env \
+              DEPLOY_PATH="$DEPLOY_PATH" \
+              GHCR_IMAGE_PREFIX="$GHCR_IMAGE_PREFIX" \
+              IMAGE_SHA="$IMAGE_SHA" \
+              bash -s <<'REMOTE'
+          set -eu
+          cd "$DEPLOY_PATH"
+
+          git fetch --prune origin main
+          git checkout --detach "$IMAGE_SHA"
+
+          sed -i \
+            -e "s|^TRAVEL_API_IMAGE=.*|TRAVEL_API_IMAGE=${GHCR_IMAGE_PREFIX}/travel-api:sha-${IMAGE_SHA}|" \
+            -e "s|^TRAVEL_EDGE_IMAGE=.*|TRAVEL_EDGE_IMAGE=${GHCR_IMAGE_PREFIX}/travel-edge:sha-${IMAGE_SHA}|" \
+            .env
+
+          SKIP_IMAGE_PULL=1 bash deploy/release.sh
+          REMOTE
+
+      - name: Verify public endpoint
+        shell: bash
+        env:
+          DEPLOY_PUBLIC_URL: ${{ vars.DEPLOY_PUBLIC_URL }}
+        run: |
+          curl --fail --silent --show-error --max-time 15 "$DEPLOY_PUBLIC_URL/" >/dev/null
+          curl --fail --silent --show-error --max-time 15 "$DEPLOY_PUBLIC_URL/api/healthz" \
+            | grep -q '"database":"connected"'
