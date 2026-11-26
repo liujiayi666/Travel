@@ -216,6 +216,17 @@ FastAPI 和 PostgreSQL 只在 Docker 内部网络可达，不直接暴露公网�
    获得域名后，改回 `APP_ENV=production`、HTTPS 域名和 `80/443`，
    再重新部署。
 
+   自动 dev 部署需要：
+
+   - GitHub Variables：`TCR_REGISTRY`、`TCR_NAMESPACE`、
+     `DEPLOY_PUBLIC_URL`，可选 `DEPLOY_PORT`、`DEPLOY_PATH`；
+   - GitHub Secrets：`TCR_USERNAME`、`TCR_PASSWORD`、
+     `DEPLOY_HOST`、`DEPLOY_USER`、`DEPLOY_SSH_KEY`、
+     `DEPLOY_KNOWN_HOSTS`；
+   - 服务器预先执行 `docker login` 到 TCR，使部署用户保存只读拉取凭据；
+   - Release 将 GHCR 镜像按 digest 同步到 TCR，再由 dev deploy job
+     SSH 到服务器更新 `.env`、备份数据库、迁移和健康检查。
+
 10. **D9 部署线上 prod**
 
     在 dev 验收通过后复制出 prod，但保持域名、数据库、volume、密钥和发布权限完全隔离。

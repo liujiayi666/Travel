@@ -22,7 +22,7 @@ postgres_db="$(read_env_value POSTGRES_DB)"
 postgres_user="$(read_env_value POSTGRES_USER)"
 
 is_immutable_image() {
-  [[ "$1" == *@sha256:* || "$1" =~ ^ghcr\.io/.+:sha-[0-9a-f]{40}$ ]]
+  [[ "$1" == *@sha256:* || "$1" =~ :sha-[0-9a-f]{40}$ ]]
 }
 
 if ! is_immutable_image "$api_image" || ! is_immutable_image "$edge_image"; then

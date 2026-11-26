@@ -73,6 +73,7 @@ jobs:
       DEPLOY_ENV: ${{ needs.metadata.outputs.environment }}
       IMAGE_OWNER: ${{ needs.metadata.outputs.image_owner }}
       REGISTRY: ghcr.io
+      TCR_IMAGE_PREFIX: ${{ vars.TCR_REGISTRY }}/${{ vars.TCR_NAMESPACE }}
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
@@ -115,6 +116,34 @@ jobs:
           provenance: true
           sbom: true
 
+      - name: Validate Tencent registry configuration
+        shell: bash
+        env:
+          TCR_REGISTRY: ${{ vars.TCR_REGISTRY }}
+          TCR_NAMESPACE: ${{ vars.TCR_NAMESPACE }}
+        run: |
+          if [[ -z "$TCR_REGISTRY" || -z "$TCR_NAMESPACE" ]]; then
+            echo "Set TCR_REGISTRY and TCR_NAMESPACE repository variables." >&2
+            exit 1
+          fi
+
+      - name: Log in to Tencent Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ vars.TCR_REGISTRY }}
+          username: ${{ secrets.TCR_USERNAME }}
+          password: ${{ secrets.TCR_PASSWORD }}
+
+      - name: Mirror image to Tencent Container Registry
+        shell: bash
+        run: |
+          tcr_image="${TCR_IMAGE_PREFIX}/${matrix.image}:sha-${GITHUB_SHA}"
+          ghcr_image="${REGISTRY}/${IMAGE_OWNER}/${matrix.image}@${{ steps.build.outputs.digest }}"
+
+          docker buildx imagetools create \
+            --tag "$tcr_image" \
+            "$ghcr_image"
+
       - name: Write release summary
         shell: bash
         run: |
@@ -124,8 +153,83 @@ jobs:
             echo "- Environment: \`${{ env.DEPLOY_ENV }}\`"
             echo "- Commit: \`${{ needs.metadata.outputs.short_sha }}\`"
             echo "- Digest: \`${{ steps.build.outputs.digest }}\`"
+            echo "- TCR: \`${TCR_IMAGE_PREFIX}/${matrix.image}:sha-${GITHUB_SHA}\`"
             echo
             echo '```text'
             echo '${{ steps.meta.outputs.tags }}'
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
+
+  deploy-dev:
+    name: Deploy dev
+    needs:
+      - quality
+      - metadata
+      - images
+    if: needs.metadata.outputs.environment == 'dev'
+    runs-on: ubuntu-latest
+    environment:
+      name: dev
+      url: ${{ vars.DEPLOY_PUBLIC_URL }}
+    timeout-minutes: 20
+    concurrency:
+      group: deploy-dev
+      cancel-in-progress: false
+    steps:
+      - name: Prepare SSH credentials
+        shell: bash
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+        run: |
+          install -d -m 700 "$RUNNER_TEMP/ssh"
+          printf '%s\n' "$DEPLOY_SSH_KEY" > "$RUNNER_TEMP/ssh/deploy_key"
+          printf '%s\n' "$DEPLOY_KNOWN_HOSTS" > "$RUNNER_TEMP/ssh/known_hosts"
+          chmod 600 "$RUNNER_TEMP/ssh/deploy_key"
+          chmod 600 "$RUNNER_TEMP/ssh/known_hosts"
+
+      - name: Deploy pinned images
+        shell: bash
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_PORT: ${{ vars.DEPLOY_PORT || '22' }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          DEPLOY_PATH: ${{ vars.DEPLOY_PATH || '/opt/travel/dev/app' }}
+          DEPLOY_PUBLIC_URL: ${{ vars.DEPLOY_PUBLIC_URL }}
+          TCR_IMAGE_PREFIX: ${{ vars.TCR_REGISTRY }}/${{ vars.TCR_NAMESPACE }}
+          IMAGE_SHA: ${{ github.sha }}
+        run: |
+          ssh \
+            -i "$RUNNER_TEMP/ssh/deploy_key" \
+            -p "$DEPLOY_PORT" \
+            -o IdentitiesOnly=yes \
+            -o StrictHostKeyChecking=yes \
+            -o UserKnownHostsFile="$RUNNER_TEMP/ssh/known_hosts" \
+            "$DEPLOY_USER@$DEPLOY_HOST" \
+            env \
+              DEPLOY_PATH="$DEPLOY_PATH" \
+              TCR_IMAGE_PREFIX="$TCR_IMAGE_PREFIX" \
+              IMAGE_SHA="$IMAGE_SHA" \
+              bash -s <<'REMOTE'
+          set -eu
+          cd "$DEPLOY_PATH"
+
+          git fetch --prune origin main
+          git checkout -B main origin/main
+
+          sed -i \
+            -e "s|^TRAVEL_API_IMAGE=.*|TRAVEL_API_IMAGE=${TCR_IMAGE_PREFIX}/travel-api:sha-${IMAGE_SHA}|" \
+            -e "s|^TRAVEL_EDGE_IMAGE=.*|TRAVEL_EDGE_IMAGE=${TCR_IMAGE_PREFIX}/travel-edge:sha-${IMAGE_SHA}|" \
+            .env
+
+          bash deploy/release.sh
+          REMOTE
+
+      - name: Verify public endpoint
+        shell: bash
+        env:
+          DEPLOY_PUBLIC_URL: ${{ vars.DEPLOY_PUBLIC_URL }}
+        run: |
+          curl --fail --silent --show-error --max-time 15 "$DEPLOY_PUBLIC_URL/" >/dev/null
+          curl --fail --silent --show-error --max-time 15 "$DEPLOY_PUBLIC_URL/api/healthz" \
+            | grep -q '"database":"connected"'
