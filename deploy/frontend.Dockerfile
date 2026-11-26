@@ -1,14 +1,19 @@
-FROM node:24-alpine AS frontend-build
+ARG NODE_BASE_IMAGE=node:24-alpine
+ARG CADDY_BASE_IMAGE=caddy:2.10-alpine
+
+FROM ${NODE_BASE_IMAGE} AS frontend-build
+
+ARG NPM_REGISTRY=https://registry.npmjs.org
 
 WORKDIR /workspace/frontend
 
 COPY frontend/package.json frontend/package-lock.json ./
-RUN npm ci
+RUN npm ci --registry="${NPM_REGISTRY}"
 
 COPY frontend/ ./
 RUN npm run build
 
-FROM caddy:2.10-alpine
+FROM ${CADDY_BASE_IMAGE}
 
 COPY deploy/Caddyfile /etc/caddy/Caddyfile
 COPY --from=frontend-build /workspace/frontend/dist /srv

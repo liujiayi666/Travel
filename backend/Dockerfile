@@ -1,8 +1,14 @@
-FROM python:3.12-slim
+ARG PYTHON_BASE_IMAGE=python:3.12-slim
+
+FROM ${PYTHON_BASE_IMAGE}
+
+ARG PYPI_INDEX_URL=https://pypi.org/simple
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1 \
+    PIP_INDEX_URL=${PYPI_INDEX_URL} \
+    UV_DEFAULT_INDEX=${PYPI_INDEX_URL} \
     PATH="/app/.venv/bin:${PATH}"
 
 WORKDIR /app
@@ -10,7 +16,10 @@ WORKDIR /app
 RUN pip install uv==0.13.4
 
 COPY pyproject.toml uv.lock ./
-RUN uv sync --frozen --no-dev --no-cache
+RUN python -m venv .venv \
+    && uv export --frozen --no-dev --format requirements-txt > /tmp/requirements.txt \
+    && .venv/bin/pip install --no-cache-dir --require-hashes -r /tmp/requirements.txt \
+    && rm /tmp/requirements.txt
 
 RUN groupadd --gid 10001 app \
     && useradd \
