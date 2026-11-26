@@ -69,8 +69,8 @@ FastAPI 和 PostgreSQL 只在 Docker 内部网络可达，不直接暴露公网�
 服务器文件建议放在：
 
 ```text
-/opt/travel/dev/.env
-/opt/travel/prod/.env
+/opt/travel/dev/app/.env
+/opt/travel/prod/app/.env
 ```
 
 文件权限设为 `600`。真实 `.env` 已被 `.gitignore` 排除。

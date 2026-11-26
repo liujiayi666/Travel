@@ -218,7 +218,7 @@ jobs:
           cd "$DEPLOY_PATH"
 
           git fetch --prune origin main
-          git checkout -B main origin/main
+          git checkout --detach "$IMAGE_SHA"
 
           sed -i \
             -e "s|^TRAVEL_API_IMAGE=.*|TRAVEL_API_IMAGE=${GHCR_IMAGE_PREFIX}/travel-api:sha-${IMAGE_SHA}|" \
