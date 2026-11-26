@@ -193,6 +193,19 @@ FastAPI 和 PostgreSQL 只在 Docker 内部网络可达，不直接暴露公网�
 
    配置服务器、SSH、防火墙、DNS 和 Caddy。公网只开放 `22/80/443`。
 
+   没有域名时，可以先做临时 IP preview：
+
+   - 防火墙只对测试来源开放 `22/80`，不要暴露 `5432/8000`；
+   - 使用 `deploy/env/ip-preview.env.example`，设置
+     `APP_ENV=development` 和 `FRONTEND_ORIGIN=http://服务器IP`；
+   - 使用 GHCR 的 `sha-*` 镜像，不在服务器上构建；
+   - `bash deploy/release.sh` 会先备份数据库，再拉取镜像、执行迁移、
+     启动 API/edge 并等待健康检查；
+   - 该模式没有 HTTPS、Secure Cookie 和自动证书，不能保存真实敏感数据。
+
+   获得域名后，改回 `APP_ENV=production`、HTTPS 域名和 `80/443`，
+   再重新部署。
+
 10. **D9 部署线上 prod**
 
     在 dev 验收通过后复制出 prod，但保持域名、数据库、volume、密钥和发布权限完全隔离。
