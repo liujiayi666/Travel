@@ -73,7 +73,6 @@ jobs:
       DEPLOY_ENV: ${{ needs.metadata.outputs.environment }}
       IMAGE_OWNER: ${{ needs.metadata.outputs.image_owner }}
       REGISTRY: ghcr.io
-      TCR_IMAGE_PREFIX: ${{ vars.TCR_REGISTRY }}/${{ vars.TCR_NAMESPACE }}
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
@@ -116,34 +115,6 @@ jobs:
           provenance: true
           sbom: true
 
-      - name: Validate Tencent registry configuration
-        shell: bash
-        env:
-          TCR_REGISTRY: ${{ vars.TCR_REGISTRY }}
-          TCR_NAMESPACE: ${{ vars.TCR_NAMESPACE }}
-        run: |
-          if [[ -z "$TCR_REGISTRY" || -z "$TCR_NAMESPACE" ]]; then
-            echo "Set TCR_REGISTRY and TCR_NAMESPACE repository variables." >&2
-            exit 1
-          fi
-
-      - name: Log in to Tencent Container Registry
-        uses: docker/login-action@v3
-        with:
-          registry: ${{ vars.TCR_REGISTRY }}
-          username: ${{ secrets.TCR_USERNAME }}
-          password: ${{ secrets.TCR_PASSWORD }}
-
-      - name: Mirror image to Tencent Container Registry
-        shell: bash
-        run: |
-          tcr_image="${TCR_IMAGE_PREFIX}/${matrix.image}:sha-${GITHUB_SHA}"
-          ghcr_image="${REGISTRY}/${IMAGE_OWNER}/${matrix.image}@${{ steps.build.outputs.digest }}"
-
-          docker buildx imagetools create \
-            --tag "$tcr_image" \
-            "$ghcr_image"
-
       - name: Write release summary
         shell: bash
         run: |
@@ -153,7 +124,6 @@ jobs:
             echo "- Environment: \`${{ env.DEPLOY_ENV }}\`"
             echo "- Commit: \`${{ needs.metadata.outputs.short_sha }}\`"
             echo "- Digest: \`${{ steps.build.outputs.digest }}\`"
-            echo "- TCR: \`${TCR_IMAGE_PREFIX}/${matrix.image}:sha-${GITHUB_SHA}\`"
             echo
             echo '```text'
             echo '${{ steps.meta.outputs.tags }}'
@@ -172,6 +142,9 @@ jobs:
       name: dev
       url: ${{ vars.DEPLOY_PUBLIC_URL }}
     timeout-minutes: 20
+    permissions:
+      contents: read
+      packages: read
     concurrency:
       group: deploy-dev
       cancel-in-progress: false
@@ -194,9 +167,39 @@ jobs:
           DEPLOY_HOST: ${{ vars.DEPLOY_HOST }}
           DEPLOY_PORT: ${{ vars.DEPLOY_PORT || '22' }}
           DEPLOY_USER: ${{ vars.DEPLOY_USER }}
+          GHCR_IMAGE_PREFIX: ghcr.io/${{ needs.metadata.outputs.image_owner }}
+          IMAGE_SHA: ${{ github.sha }}
+        run: |
+          printf '%s' "${{ secrets.GITHUB_TOKEN }}" \
+            | docker login ghcr.io \
+                --username "${{ github.actor }}" \
+                --password-stdin
+
+          docker pull "${GHCR_IMAGE_PREFIX}/travel-api:sha-${IMAGE_SHA}"
+          docker pull "${GHCR_IMAGE_PREFIX}/travel-edge:sha-${IMAGE_SHA}"
+
+          docker save \
+            "${GHCR_IMAGE_PREFIX}/travel-api:sha-${IMAGE_SHA}" \
+            "${GHCR_IMAGE_PREFIX}/travel-edge:sha-${IMAGE_SHA}" \
+            | gzip -1 \
+            | ssh \
+                -i "$RUNNER_TEMP/ssh/deploy_key" \
+                -p "$DEPLOY_PORT" \
+                -o IdentitiesOnly=yes \
+                -o StrictHostKeyChecking=yes \
+                -o UserKnownHostsFile="$RUNNER_TEMP/ssh/known_hosts" \
+                "$DEPLOY_USER@$DEPLOY_HOST" \
+                'gunzip | docker load'
+
+      - name: Apply deployment
+        shell: bash
+        env:
+          DEPLOY_HOST: ${{ vars.DEPLOY_HOST }}
+          DEPLOY_PORT: ${{ vars.DEPLOY_PORT || '22' }}
+          DEPLOY_USER: ${{ vars.DEPLOY_USER }}
           DEPLOY_PATH: ${{ vars.DEPLOY_PATH || '/opt/travel/dev/app' }}
           DEPLOY_PUBLIC_URL: ${{ vars.DEPLOY_PUBLIC_URL }}
-          TCR_IMAGE_PREFIX: ${{ vars.TCR_REGISTRY }}/${{ vars.TCR_NAMESPACE }}
+          GHCR_IMAGE_PREFIX: ghcr.io/${{ needs.metadata.outputs.image_owner }}
           IMAGE_SHA: ${{ github.sha }}
         run: |
           ssh \
@@ -208,7 +211,7 @@ jobs:
             "$DEPLOY_USER@$DEPLOY_HOST" \
             env \
               DEPLOY_PATH="$DEPLOY_PATH" \
-              TCR_IMAGE_PREFIX="$TCR_IMAGE_PREFIX" \
+              GHCR_IMAGE_PREFIX="$GHCR_IMAGE_PREFIX" \
               IMAGE_SHA="$IMAGE_SHA" \
               bash -s <<'REMOTE'
           set -eu
@@ -218,11 +221,11 @@ jobs:
           git checkout -B main origin/main
 
           sed -i \
-            -e "s|^TRAVEL_API_IMAGE=.*|TRAVEL_API_IMAGE=${TCR_IMAGE_PREFIX}/travel-api:sha-${IMAGE_SHA}|" \
-            -e "s|^TRAVEL_EDGE_IMAGE=.*|TRAVEL_EDGE_IMAGE=${TCR_IMAGE_PREFIX}/travel-edge:sha-${IMAGE_SHA}|" \
+            -e "s|^TRAVEL_API_IMAGE=.*|TRAVEL_API_IMAGE=${GHCR_IMAGE_PREFIX}/travel-api:sha-${IMAGE_SHA}|" \
+            -e "s|^TRAVEL_EDGE_IMAGE=.*|TRAVEL_EDGE_IMAGE=${GHCR_IMAGE_PREFIX}/travel-edge:sha-${IMAGE_SHA}|" \
             .env
 
-          bash deploy/release.sh
+          SKIP_IMAGE_PULL=1 bash deploy/release.sh
           REMOTE
 
       - name: Verify public endpoint

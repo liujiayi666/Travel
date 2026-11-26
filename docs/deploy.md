@@ -218,13 +218,12 @@ FastAPI 和 PostgreSQL 只在 Docker 内部网络可达，不直接暴露公网�
 
    自动 dev 部署需要：
 
-   - GitHub Variables：`TCR_REGISTRY`、`TCR_NAMESPACE`、
-     `DEPLOY_HOST`、`DEPLOY_USER`、`DEPLOY_KNOWN_HOSTS`、
+   - GitHub Variables：`DEPLOY_HOST`、`DEPLOY_USER`、`DEPLOY_KNOWN_HOSTS`、
      `DEPLOY_PUBLIC_URL`，可选 `DEPLOY_PORT`、`DEPLOY_PATH`；
-   - GitHub Secrets：`TCR_USERNAME`、`TCR_PASSWORD`、`DEPLOY_SSH_KEY`；
-   - 服务器预先执行 `docker login` 到 TCR，使部署用户保存只读拉取凭据；
-   - Release 将 GHCR 镜像按 digest 同步到 TCR，再由 dev deploy job
-     SSH 到服务器更新 `.env`、备份数据库、迁移和健康检查。
+   - GitHub Secrets：`DEPLOY_SSH_KEY`；
+   - GitHub Runner 从 GHCR 拉取固定 SHA 镜像，再通过 SSH 压缩传输并由
+     服务器 `docker load`，避免服务器直接访问 GHCR；
+   - dev deploy job 随后更新 `.env`、备份数据库、迁移和健康检查。
 
 10. **D9 部署线上 prod**
 
