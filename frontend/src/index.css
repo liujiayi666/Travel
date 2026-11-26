@@ -80,6 +80,14 @@ body {
   text-align: left;
 }
 
+.route-loading {
+  display: grid;
+  flex: 1;
+  place-items: center;
+  color: var(--color-text-secondary);
+  font-size: var(--font-size-body-small);
+}
+
 button,
 input,
 select,

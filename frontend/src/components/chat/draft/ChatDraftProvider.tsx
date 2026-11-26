@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 
-import { useAuth } from "@/components/auth";
+import { useAuth } from "@/components/auth/AuthContext";
 import {
   ChatDraftContext,
   type ChatDraftActions,

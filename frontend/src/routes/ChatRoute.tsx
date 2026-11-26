@@ -1,10 +1,7 @@
-import {
-  useAuth,
-  useAuthActions,
-} from "@/components/auth";
+import { useAuth, useAuthActions } from "@/components/auth/AuthContext";
 import { ChatSession } from "@/components/chat";
 import { isConversationId } from "@/components/chat/chats";
-import { useModal } from "@/components/common/Modal";
+import { useModal } from "@/components/common/Modal/ModalContext";
 import { useParams } from "react-router";
 
 export const ChatRoute = () => {

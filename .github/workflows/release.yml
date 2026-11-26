@@ -1,0 +1,131 @@
+name: Release
+
+on:
+  push:
+    branches:
+      - main
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: release-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  quality:
+    name: Quality gates
+    uses: ./.github/workflows/ci.yml
+
+  metadata:
+    name: Resolve release metadata
+    needs:
+      - quality
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      environment: ${{ steps.release.outputs.environment }}
+      image_owner: ${{ steps.release.outputs.image_owner }}
+      short_sha: ${{ steps.release.outputs.short_sha }}
+    steps:
+      - name: Resolve environment and revision
+        id: release
+        shell: bash
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            environment=prod
+          elif [[ "$GITHUB_REF" == refs/heads/main ]]; then
+            environment=dev
+          else
+            environment=manual
+          fi
+
+          image_owner="$(printf '%s' "$GITHUB_REPOSITORY_OWNER" | tr '[:upper:]' '[:lower:]')"
+          echo "environment=$environment" >> "$GITHUB_OUTPUT"
+          echo "image_owner=$image_owner" >> "$GITHUB_OUTPUT"
+          echo "short_sha=${GITHUB_SHA::12}" >> "$GITHUB_OUTPUT"
+
+  images:
+    name: Build ${{ matrix.image }}
+    needs:
+      - quality
+      - metadata
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - image: travel-api
+            context: ./backend
+            file: ./backend/Dockerfile
+          - image: travel-edge
+            context: .
+            file: ./deploy/frontend.Dockerfile
+    env:
+      DEPLOY_ENV: ${{ needs.metadata.outputs.environment }}
+      IMAGE_OWNER: ${{ needs.metadata.outputs.image_owner }}
+      REGISTRY: ghcr.io
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Generate image metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_OWNER }}/${{ matrix.image }}
+          tags: |
+            type=sha,format=long,prefix=sha-
+            type=raw,value=dev,enable=${{ needs.metadata.outputs.environment == 'dev' }}
+            type=raw,value=prod,enable=${{ needs.metadata.outputs.environment == 'prod' }}
+            type=ref,event=tag
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+
+      - name: Build and push image
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: ${{ matrix.context }}
+          file: ${{ matrix.file }}
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha,scope=${{ matrix.image }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.image }}
+          provenance: true
+          sbom: true
+
+      - name: Write release summary
+        shell: bash
+        run: |
+          {
+            echo "### ${{ matrix.image }}"
+            echo
+            echo "- Environment: \`${{ env.DEPLOY_ENV }}\`"
+            echo "- Commit: \`${{ needs.metadata.outputs.short_sha }}\`"
+            echo "- Digest: \`${{ steps.build.outputs.digest }}\`"
+            echo
+            echo '```text'
+            echo '${{ steps.meta.outputs.tags }}'
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
