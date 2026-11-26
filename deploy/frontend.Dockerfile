@@ -3,10 +3,12 @@ ARG CADDY_BASE_IMAGE=caddy:2.10-alpine
 
 FROM ${NODE_BASE_IMAGE} AS frontend-build
 
+ARG NPM_REGISTRY=https://registry.npmjs.org
+
 WORKDIR /workspace/frontend
 
 COPY frontend/package.json frontend/package-lock.json ./
-RUN npm ci
+RUN npm ci --registry="${NPM_REGISTRY}"
 
 COPY frontend/ ./
 RUN npm run build

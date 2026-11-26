@@ -193,8 +193,10 @@ jobs:
 
           # Build sequentially so the 2 GB production host does not run out of memory.
           base_image_mirror=mirror.ccs.tencentyun.com/library
+          package_mirror=https://mirrors.cloud.tencent.com
           docker build \
             --build-arg "PYTHON_BASE_IMAGE=${base_image_mirror}/python:3.12-slim" \
+            --build-arg "PYPI_INDEX_URL=${package_mirror}/pypi/simple" \
             --label "org.opencontainers.image.revision=${IMAGE_SHA}" \
             --tag "$api_image" \
             --file backend/Dockerfile \
@@ -202,6 +204,7 @@ jobs:
           docker build \
             --build-arg "NODE_BASE_IMAGE=${base_image_mirror}/node:24-alpine" \
             --build-arg "CADDY_BASE_IMAGE=${base_image_mirror}/caddy:2.10-alpine" \
+            --build-arg "NPM_REGISTRY=${package_mirror}/npm/" \
             --label "org.opencontainers.image.revision=${IMAGE_SHA}" \
             --tag "$edge_image" \
             --file deploy/frontend.Dockerfile \
