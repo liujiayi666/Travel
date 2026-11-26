@@ -1,6 +1,6 @@
 import { useId, useRef, useState, type FormEvent } from "react";
 
-import { Modal } from "@/components/common/Modal";
+import { Modal } from "@/components/common/Modal/Modal";
 import {
   loginInputSchema,
   registerInputSchema,

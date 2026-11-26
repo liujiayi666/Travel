@@ -10,7 +10,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { ChatRoute } from "./ChatRoute";
 
-vi.mock("@/components/auth", () => ({
+vi.mock("@/components/auth/AuthContext", () => ({
   useAuth: () => ({
     status: "authenticated",
     user: {
@@ -25,7 +25,7 @@ vi.mock("@/components/auth", () => ({
   }),
 }));
 
-vi.mock("@/components/common/Modal", () => ({
+vi.mock("@/components/common/Modal/ModalContext", () => ({
   useModal: () => ({ actions: { open: vi.fn() } }),
 }));
 

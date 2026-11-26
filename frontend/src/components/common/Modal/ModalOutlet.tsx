@@ -1,5 +1,13 @@
-import { AuthModal, useAuthActions } from "@/components/auth";
-import { useModal } from "@/components/common/Modal";
+import { lazy, Suspense } from "react";
+
+import { useAuthActions } from "@/components/auth/AuthContext";
+import { useModal } from "@/components/common/Modal/ModalContext";
+
+const AuthModal = lazy(() =>
+  import("@/components/auth/AuthModal").then((module) => ({
+    default: module.AuthModal,
+  })),
+);
 
 export const ModalOutlet = () => {
   const { state, actions } = useModal();
@@ -8,12 +16,14 @@ export const ModalOutlet = () => {
 
   if (scene?.type === "auth") {
     return (
-      <AuthModal
-        open
-        onClose={actions.close}
-        onLogin={login}
-        onRegister={register}
-      />
+      <Suspense fallback={null}>
+        <AuthModal
+          open
+          onClose={actions.close}
+          onLogin={login}
+          onRegister={register}
+        />
+      </Suspense>
     );
   }
 

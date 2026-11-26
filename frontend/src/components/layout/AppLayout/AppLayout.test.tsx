@@ -35,7 +35,7 @@ const {
   openModalMock: vi.fn(),
 }));
 
-vi.mock("@/components/auth", () => ({
+vi.mock("@/components/auth/AuthContext", () => ({
   useAuth: () => authMock.state,
   useAuthActions: () => ({
     expireSession: expireSessionMock,
@@ -50,7 +50,7 @@ vi.mock("@/data-provider/Conversations", () => ({
   }),
 }));
 
-vi.mock("@/components/common/Modal", () => ({
+vi.mock("@/components/common/Modal/ModalContext", () => ({
   useModal: () => ({ actions: { open: openModalMock } }),
 }));
 

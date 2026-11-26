@@ -1,8 +1,9 @@
 import { Outlet } from "react-router";
 
-import { AuthProvider } from "@/components/auth";
+import { AuthProvider } from "@/components/auth/AuthProvider";
 import { SessionChatDraftProvider } from "@/components/chat/draft";
-import { ModalOutlet, ModalProvider } from "@/components/common/Modal";
+import { ModalOutlet } from "@/components/common/Modal/ModalOutlet";
+import { ModalProvider } from "@/components/common/Modal/ModalProvider";
 import { useSessionTransition } from "@/hooks/session";
 
 export const AppProviders = () => {

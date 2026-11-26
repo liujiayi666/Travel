@@ -1,10 +1,28 @@
+import { lazy, Suspense } from "react";
 import { AppLayout } from "@/components/layout";
-import { ChatRoute } from "@/routes/ChatRoute";
 import {
   createBrowserRouter,
   Navigate,
 } from "react-router";
 import { AppProviders } from "@/providers/AppProviders";
+
+const ChatRoute = lazy(() =>
+  import("@/routes/ChatRoute").then((module) => ({
+    default: module.ChatRoute,
+  })),
+);
+
+const ChatRouteBoundary = () => (
+  <Suspense
+    fallback={
+      <div className="route-loading" role="status" aria-live="polite">
+        Loading conversation…
+      </div>
+    }
+  >
+    <ChatRoute />
+  </Suspense>
+);
 
 export const router = createBrowserRouter([
   {
@@ -21,11 +39,11 @@ export const router = createBrowserRouter([
           },
           {
             path: "chat",
-            element: <ChatRoute />,
+            element: <ChatRouteBoundary />,
           },
           {
             path: "chat/:conversationId",
-            element: <ChatRoute />,
+            element: <ChatRouteBoundary />,
           },
         ],
       },

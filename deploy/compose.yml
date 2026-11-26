@@ -1,0 +1,98 @@
+name: travel-${DEPLOY_ENV:?DEPLOY_ENV must be set}
+
+services:
+  db:
+    image: postgres:18-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:?POSTGRES_DB must be set}
+      POSTGRES_USER: ${POSTGRES_USER:?POSTGRES_USER must be set}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set}
+    volumes:
+      - postgres_data:/var/lib/postgresql
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - pg_isready -U "$${POSTGRES_USER}" -d "$${POSTGRES_DB}"
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 10s
+    stop_grace_period: 30s
+    security_opt:
+      - no-new-privileges:true
+    networks:
+      - data
+
+  migrate:
+    image: ${TRAVEL_API_IMAGE:?TRAVEL_API_IMAGE must be set}
+    profiles:
+      - tools
+    command:
+      - alembic
+      - upgrade
+      - head
+    environment:
+      APP_ENV: ${APP_ENV:-production}
+      DATABASE_URL: postgresql+psycopg_async://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: "no"
+    security_opt:
+      - no-new-privileges:true
+    networks:
+      - data
+
+  api:
+    image: ${TRAVEL_API_IMAGE:?TRAVEL_API_IMAGE must be set}
+    restart: unless-stopped
+    env_file:
+      - ../.env
+    environment:
+      APP_ENV: ${APP_ENV:-production}
+      DATABASE_URL: postgresql+psycopg_async://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}
+      FRONTEND_ORIGIN: ${FRONTEND_ORIGIN:?FRONTEND_ORIGIN must be set}
+    depends_on:
+      db:
+        condition: service_healthy
+    stop_grace_period: 30s
+    security_opt:
+      - no-new-privileges:true
+    networks:
+      - data
+      - app
+
+  edge:
+    image: ${TRAVEL_EDGE_IMAGE:-travel-edge:dev}
+    build:
+      context: ..
+      dockerfile: deploy/frontend.Dockerfile
+    restart: unless-stopped
+    environment:
+      FRONTEND_ORIGIN: ${FRONTEND_ORIGIN:?FRONTEND_ORIGIN must be set}
+    depends_on:
+      api:
+        condition: service_healthy
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    stop_grace_period: 10s
+    security_opt:
+      - no-new-privileges:true
+    volumes:
+      - caddy_data:/data
+      - caddy_config:/config
+    networks:
+      - app
+
+volumes:
+  postgres_data:
+  caddy_data:
+  caddy_config:
+
+networks:
+  data:
+    internal: true
+  app:

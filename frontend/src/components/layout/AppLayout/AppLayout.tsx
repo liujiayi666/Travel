@@ -1,10 +1,10 @@
 import { Outlet, useParams, useSearchParams } from "react-router";
 import { useEffect } from "react";
 
-import { useAuth, useAuthActions } from "@/components/auth";
+import { useAuth, useAuthActions } from "@/components/auth/AuthContext";
 import type { ChatSummary } from "@/components/chat/chats";
 import { useConversationList } from "@/data-provider/Conversations";
-import { useModal } from "@/components/common/Modal";
+import { useModal } from "@/components/common/Modal/ModalContext";
 import type { AccountMenuItem } from "./AccountMenu";
 import { AppShell } from "./AppShell";
 import { Content } from "./Content";
