@@ -16,7 +16,10 @@ WORKDIR /app
 RUN pip install uv==0.13.4
 
 COPY pyproject.toml uv.lock ./
-RUN uv sync --frozen --no-dev --no-cache
+RUN python -m venv .venv \
+    && uv export --frozen --no-dev --format requirements-txt > /tmp/requirements.txt \
+    && .venv/bin/pip install --no-cache-dir --require-hashes -r /tmp/requirements.txt \
+    && rm /tmp/requirements.txt
 
 RUN groupadd --gid 10001 app \
     && useradd \
