@@ -1,6 +1,6 @@
 # 部署手册
 
-> 目标：在一台香港服务器上，通过 Docker Compose 和 Caddy 部署相互隔离的线上 dev 与 prod。
+> 目标：使用 Docker Compose 和 Caddy 部署相互隔离的线上 dev 与 prod。
 
 ## 当前状态
 
@@ -15,21 +15,24 @@
 ## 目标架构
 
 ```text
-                  dev.example.com           example.com
-                         │                       │
-                         └──── 共享 Caddy ────────┘
-                                  │
-                 ┌────────────────┴────────────────┐
-                 │                                 │
-              dev 应用栈                        prod 应用栈
-       前端静态文件 + api-dev               前端静态文件 + api-prod
-                 │                                 │
-              db-dev                            db-prod
-           独立 volume                        独立 volume
+          dev 服务器                         prod 服务器
+     https://dev.example.com            https://example.com
+              │                                 │
+           Caddy                             Caddy
+              │                                 │
+        dev 应用栈                        prod 应用栈
+  前端静态文件 + api-dev               前端静态文件 + api-prod
+              │                                 │
+           db-dev                            db-prod
+        独立 volume                        独立 volume
 ```
 
 Caddy 是公网入口，负责 HTTPS、前端静态文件和 `/api/*` 反向代理。
 FastAPI 和 PostgreSQL 只在 Docker 内部网络可达，不直接暴露公网端口。
+
+首版每个环境使用独立主机。两个环境栈都需要监听宿主机 `80/443`；
+如果直接放在同一台机器，后启动的 Caddy 会因端口冲突失败。后续确需共用一个
+主机时，应单独设计共享 ingress，而不是同时启动两个 edge。
 
 ## 环境契约
 
@@ -50,6 +53,7 @@ FastAPI 和 PostgreSQL 只在 Docker 内部网络可达，不直接暴露公网�
 
 可以提交进 Git：
 
+- `deploy/env/local.env.example`
 - `deploy/env/dev.env.example`
 - `deploy/env/prod.env.example`
 - 非敏感域名和配置项名称
@@ -123,7 +127,7 @@ FastAPI 和 PostgreSQL 只在 Docker 内部网络可达，不直接暴露公网�
    本地首次验证：
 
    ```bash
-   cp deploy/env/dev.env.example .env
+   cp deploy/env/local.env.example .env
    # 修改 .env 中的数据库密码；不要复用本机 backend/.env
    docker compose --env-file .env -f deploy/compose.yml config --quiet
    bash deploy/up.sh
@@ -180,6 +184,7 @@ FastAPI 和 PostgreSQL 只在 Docker 内部网络可达，不直接暴露公网�
 
    - 合并到 `main` 生成 `dev`、`sha-<commit>` 标签；
    - 推送 `v*` tag 生成 `prod`、`sha-<commit>` 和版本 tag；
+   - 手动从其他分支运行只发布 `sha-<commit>`，不会覆盖 `dev/prod` 浮动标签；
    - 两个镜像分别发布为 `travel-api` 和 `travel-edge`；
    - 服务器部署使用不可变 `sha-<commit>` 或 digest，不依赖会移动的 `dev/prod` tag；
    - 构建输出包含 provenance 和 SBOM，便于追溯镜像来源与依赖。
