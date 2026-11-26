@@ -141,10 +141,9 @@ jobs:
     environment:
       name: dev
       url: ${{ vars.DEPLOY_PUBLIC_URL }}
-    timeout-minutes: 20
+    timeout-minutes: 40
     permissions:
       contents: read
-      packages: read
     concurrency:
       group: deploy-dev
       cancel-in-progress: false
@@ -161,35 +160,53 @@ jobs:
           chmod 600 "$RUNNER_TEMP/ssh/deploy_key"
           chmod 600 "$RUNNER_TEMP/ssh/known_hosts"
 
-      - name: Deploy pinned images
+      - name: Build images on server
         shell: bash
         env:
           DEPLOY_HOST: ${{ vars.DEPLOY_HOST }}
           DEPLOY_PORT: ${{ vars.DEPLOY_PORT || '22' }}
           DEPLOY_USER: ${{ vars.DEPLOY_USER }}
+          DEPLOY_PATH: ${{ vars.DEPLOY_PATH || '/opt/travel/dev/app' }}
           GHCR_IMAGE_PREFIX: ghcr.io/${{ needs.metadata.outputs.image_owner }}
           IMAGE_SHA: ${{ github.sha }}
         run: |
-          printf '%s' "${{ secrets.GITHUB_TOKEN }}" \
-            | docker login ghcr.io \
-                --username "${{ github.actor }}" \
-                --password-stdin
+          ssh \
+            -i "$RUNNER_TEMP/ssh/deploy_key" \
+            -p "$DEPLOY_PORT" \
+            -o IdentitiesOnly=yes \
+            -o StrictHostKeyChecking=yes \
+            -o UserKnownHostsFile="$RUNNER_TEMP/ssh/known_hosts" \
+            "$DEPLOY_USER@$DEPLOY_HOST" \
+            env \
+              DEPLOY_PATH="$DEPLOY_PATH" \
+              GHCR_IMAGE_PREFIX="$GHCR_IMAGE_PREFIX" \
+              IMAGE_SHA="$IMAGE_SHA" \
+              bash -s <<'REMOTE'
+          set -eu
+          cd "$DEPLOY_PATH"
 
-          docker pull "${GHCR_IMAGE_PREFIX}/travel-api:sha-${IMAGE_SHA}"
-          docker pull "${GHCR_IMAGE_PREFIX}/travel-edge:sha-${IMAGE_SHA}"
+          git fetch --prune origin main
+          git checkout --detach "$IMAGE_SHA"
 
-          docker save \
-            "${GHCR_IMAGE_PREFIX}/travel-api:sha-${IMAGE_SHA}" \
-            "${GHCR_IMAGE_PREFIX}/travel-edge:sha-${IMAGE_SHA}" \
-            | gzip -1 \
-            | ssh \
-                -i "$RUNNER_TEMP/ssh/deploy_key" \
-                -p "$DEPLOY_PORT" \
-                -o IdentitiesOnly=yes \
-                -o StrictHostKeyChecking=yes \
-                -o UserKnownHostsFile="$RUNNER_TEMP/ssh/known_hosts" \
-                "$DEPLOY_USER@$DEPLOY_HOST" \
-                'gunzip | docker load'
+          api_image="${GHCR_IMAGE_PREFIX}/travel-api:sha-${IMAGE_SHA}"
+          edge_image="${GHCR_IMAGE_PREFIX}/travel-edge:sha-${IMAGE_SHA}"
+
+          # Build sequentially so the 2 GB production host does not run out of memory.
+          base_image_mirror=mirror.ccs.tencentyun.com/library
+          docker build \
+            --build-arg "PYTHON_BASE_IMAGE=${base_image_mirror}/python:3.12-slim" \
+            --label "org.opencontainers.image.revision=${IMAGE_SHA}" \
+            --tag "$api_image" \
+            --file backend/Dockerfile \
+            backend
+          docker build \
+            --build-arg "NODE_BASE_IMAGE=${base_image_mirror}/node:24-alpine" \
+            --build-arg "CADDY_BASE_IMAGE=${base_image_mirror}/caddy:2.10-alpine" \
+            --label "org.opencontainers.image.revision=${IMAGE_SHA}" \
+            --tag "$edge_image" \
+            --file deploy/frontend.Dockerfile \
+            .
+          REMOTE
 
       - name: Apply deployment
         shell: bash
@@ -217,8 +234,10 @@ jobs:
           set -eu
           cd "$DEPLOY_PATH"
 
-          git fetch --prune origin main
-          git checkout --detach "$IMAGE_SHA"
+          if [[ "$(git rev-parse HEAD)" != "$IMAGE_SHA" ]]; then
+            echo "Server checkout does not match image revision." >&2
+            exit 1
+          fi
 
           sed -i \
             -e "s|^TRAVEL_API_IMAGE=.*|TRAVEL_API_IMAGE=${GHCR_IMAGE_PREFIX}/travel-api:sha-${IMAGE_SHA}|" \
